@@ -29,8 +29,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// var log *logrus.Logger
-
 func init() {
 
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: logging.TimeFormatRFC3339Micro})
@@ -64,12 +62,4 @@ func reportInfoln(args ...interface{}) {
 
 func reportInfof(format string, args ...interface{}) {
 	log.Info().Msgf(format+"\n", args...)
-}
-
-func reportError(msg string) {
-	log.Error().Msg(msg)
-}
-
-func reportErrorf(format string, args ...interface{}) {
-	log.Error().Msgf(format+"\n", args...)
 }
