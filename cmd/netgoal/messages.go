@@ -18,6 +18,6 @@ package main
 
 const (
 	errDirectoryAlreadyExists = "network Root Directory '%s' already exists"
-	errorCreateNetwork        = "Error creating private network: %s"
-	infoNetworkCreated        = "Network %s created under %s"
+	errorCreateNetwork        = "error creating private network: %s"
+	infoNetworkCreated        = "network %s created under %s"
 )
