@@ -20,20 +20,19 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sirupsen/logrus"
+	"github.com/algorand/go-algorand/logging"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
-var log *logrus.Logger
-
 func init() {
+	// ConsoleWriter is good for CLI usage, less performant for daemons
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: logging.TimeFormatRFC3339Micro})
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+
 	rootCmd.AddCommand(applyCmd)
 	rootCmd.AddCommand(getCmd)
-
-	log = logrus.New()
-
-	log.Out = os.Stdout
-	log.SetLevel(logrus.DebugLevel)
 }
 
 var rootCmd = &cobra.Command{
@@ -52,15 +51,4 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-}
-
-func reportErrorf(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
-	// log.Warnf(format, args...)
-	os.Exit(1)
-}
-
-func reportInfof(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
-	// log.Infof(format, args...)
 }
