@@ -22,9 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/sirupsen/logrus"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/logging/telemetryspec"
@@ -36,7 +33,7 @@ const telemetrySeparator = "/"
 const logBufferDepth = 2
 
 // EnableTelemetry configures and enables telemetry based on the config provided
-func EnableTelemetry(cfg TelemetryConfig, l *logger) (err error) {
+func EnableTelemetry(cfg TelemetryConfig, l *logFacade) (err error) {
 	telemetry, err := makeTelemetryState(cfg, createElasticHook)
 	if err != nil {
 		return
@@ -45,31 +42,52 @@ func EnableTelemetry(cfg TelemetryConfig, l *logger) (err error) {
 	return
 }
 
-func enableTelemetryState(telemetry *telemetryState, l *logger) {
-	l.loggerState.telemetry = telemetry
+// FIXME(@excalq): Disabling Telemetry for Zerolog testing (Avoids changing hooks to Logrus internals)
+func enableTelemetryState(telemetry *telemetryState, l *logFacade) {
+	l.telemetry = telemetry
 	// Hook our normal logging to send desired types to telemetry
-	l.AddHook(telemetry.hook)
+	// l.AddHook(telemetry.hook)
 	// Wrap current logger Output writer to capture history
-	l.setOutput(telemetry.wrapOutput(l.getOutput()))
+	// l.SetOutput(telemetry.wrapOutput(l.getOutput()))
 }
 
-func makeLevels(min logrus.Level) []logrus.Level {
-	levels := []logrus.Level{}
-	for _, l := range []logrus.Level{
-		logrus.PanicLevel,
-		logrus.FatalLevel,
-		logrus.ErrorLevel,
-		logrus.WarnLevel,
-		logrus.InfoLevel,
-		logrus.DebugLevel,
-	} {
-		if l <= min {
-			levels = append(levels, l)
-		}
-	}
-	return levels
+// WARNING: Logrus and Zerolog/Zap have reverse level schemes.
+// Logrus (Panic==0) is reverse of Zerolog & Zap (Debug==0)
+func makeLevels(min Level) []Level {
+// Original Logrus (For refactoring reference. Delete on cleanup.)
+// func makeLevels(min logrus.Level) []logrus.Level {
+// 	levels := []logrus.Level{}
+// 	for _, l := range []logrus.Level{
+// 		logrus.PanicLevel,
+// 		logrus.FatalLevel,
+// 		logrus.ErrorLevel,
+// 		logrus.WarnLevel,
+// 		logrus.InfoLevel,
+// 		logrus.DebugLevel,
+// 	} {
+// 		if l <= min {
+// 			levels = append(levels, l)
+// 		}
+// 	}
+// 	return levels
+	// levels := []Level{}
+	// for _, l := range []Level{
+	// 	Debug,
+	// 	Info,
+	// 	Warn,
+	// 	Error,
+	// 	Fatal,
+	// 	Panic,
+	// } {
+	// 	if l >= min {
+	// 		levels = append(levels, l)
+	// 	}
+	// }
+	// return levels
+	return []Level{}
 }
 
+// @excalq: This is broken, need refactoring for Zerolog
 func makeTelemetryState(cfg TelemetryConfig, hookFactory hookFactory) (*telemetryState, error) {
 	telemetry := &telemetryState{}
 	telemetry.history = createLogBuffer(logBufferDepth)
@@ -81,7 +99,7 @@ func makeTelemetryState(cfg TelemetryConfig, hookFactory hookFactory) (*telemetr
 		if err != nil {
 			return nil, err
 		}
-		telemetry.hook = createAsyncHookLevels(hook, 32, 100, makeLevels(cfg.MinLogLevel))
+		telemetry.hook = createAsyncHookLevels(hook, 32, 100)
 	} else {
 		telemetry.hook = new(dummyHook)
 	}
@@ -229,22 +247,22 @@ func (t *telemetryState) wrapOutput(out io.Writer) io.Writer {
 	return t.history.wrapOutput(out)
 }
 
-func (t *telemetryState) logMetrics(l logger, category telemetryspec.Category, metrics telemetryspec.MetricDetails, details interface{}) {
+func (t *telemetryState) logMetrics(l logFacade, category telemetryspec.Category, metrics telemetryspec.MetricDetails, details interface{}) {
 	if metrics == nil {
 		return
 	}
-	l = l.WithFields(logrus.Fields{
+	l.log = l.log.With().Fields(Fields{
 		"metrics": metrics,
-	}).(logger)
+	}).Logger()
 
 	t.logTelemetry(l, buildMessage(string(category), string(metrics.Identifier())), details)
 }
 
-func (t *telemetryState) logEvent(l logger, category telemetryspec.Category, identifier telemetryspec.Event, details interface{}) {
+func (t *telemetryState) logEvent(l logFacade, category telemetryspec.Category, identifier telemetryspec.Event, details interface{}) {
 	t.logTelemetry(l, buildMessage(string(category), string(identifier)), details)
 }
 
-func (t *telemetryState) logStartOperation(l logger, category telemetryspec.Category, identifier telemetryspec.Operation) TelemetryOperation {
+func (t *telemetryState) logStartOperation(l logFacade, category telemetryspec.Category, identifier telemetryspec.Operation) TelemetryOperation {
 	op := makeTelemetryOperation(t, category, identifier)
 	t.logTelemetry(l, buildMessage(string(category), string(identifier), "Start"), nil)
 	return op
@@ -256,27 +274,28 @@ func buildMessage(args ...string) string {
 }
 
 // logTelemetry explicitly only sends telemetry events to the cloud.
-func (t *telemetryState) logTelemetry(l logger, message string, details interface{}) {
-	if details != nil {
-		l = l.WithFields(logrus.Fields{
-			"details": details,
-		}).(logger)
-	}
-
-	entry := l.entry.WithFields(Fields{
+func (t *telemetryState) logTelemetry(l logFacade, message string, details interface{}) {
+	logFields := Fields{
 		"session":      l.GetTelemetrySession(),
 		"instanceName": l.GetInstanceName(),
 		"v":            l.GetTelemetryVersion(),
-	})
-	// Populate entry like logrus.entry.log() does
-	entry.Time = time.Now()
-	entry.Level = logrus.InfoLevel
-	entry.Message = message
+	}
+	if details != nil {
+		logFields["details"] = details
+	}
+
+	// @excalq: (perf) Info() can only be called on a pointer
+	logger := l.log.With().Fields(logFields).Logger()
+	// @excalq: Are all telemetry events sent here at INFO level?
+	// entry.Level = logrus.InfoLevel // (pre-refactored) 
+	event := logger.Info()
 
 	if t.telemetryConfig.SendToLog {
-		entry.Info(message)
+		l.Info(message)
 	}
-	t.hook.Fire(entry)
+	if t.hook != nil {
+		t.hook.Run(event, Info, message)
+	}
 }
 
 func (t *telemetryState) Close() {

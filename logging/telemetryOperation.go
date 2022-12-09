@@ -20,8 +20,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/algorand/go-algorand/logging/telemetryspec"
 )
 
@@ -36,16 +34,14 @@ func makeTelemetryOperation(telemetryState *telemetryState, category telemetrysp
 }
 
 // Stop is called to report the completion of an operation started by logger.StartOperation
-func (op *TelemetryOperation) Stop(l logger, details interface{}) {
+func (op *TelemetryOperation) Stop(l logFacade, details interface{}) {
 	// If we have already called Stop, or if we're a nil operation, don't do anything
 	if !atomic.CompareAndSwapInt32(&op.pending, 1, 0) {
 		return
 	}
 
 	elapsed := time.Since(op.startTime).Nanoseconds()
-	entry := l.WithFields(logrus.Fields{
-		"duration": elapsed,
-	}).(logger)
+	durationLogger := l.WithFields(Fields{"duration": elapsed}).(*logFacade)
 
-	op.telemetryState.logTelemetry(entry, buildMessage(string(op.category), string(op.identifier), "Stop"), details)
+	op.telemetryState.logTelemetry(*durationLogger, buildMessage(string(op.category), string(op.identifier), "Stop"), details)
 }

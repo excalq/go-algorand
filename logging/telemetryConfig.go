@@ -24,8 +24,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/util/uuid"
 )
@@ -65,8 +63,8 @@ func createTelemetryConfig() TelemetryConfig {
 		Enable:             enable,
 		GUID:               uuid.New(),
 		URI:                "",
-		MinLogLevel:        logrus.WarnLevel,
-		ReportHistoryLevel: logrus.WarnLevel,
+		MinLogLevel:        Warn,
+		ReportHistoryLevel: Warn,
 		// These credentials are here intentionally. Not a bug.
 		UserName: defaultTelemetryUsername,
 		Password: defaultTelemetryPassword,
@@ -151,8 +149,8 @@ func loadTelemetryConfig(path string) (TelemetryConfig, error) {
 	dec := json.NewDecoder(f)
 	err = dec.Decode(&marshaledConfig)
 	cfg = marshaledConfig.TelemetryConfig
-	cfg.MinLogLevel = logrus.Level(marshaledConfig.MinLogLevel)
-	cfg.ReportHistoryLevel = logrus.Level(marshaledConfig.ReportHistoryLevel)
+	cfg.MinLogLevel = Level(marshaledConfig.MinLogLevel)
+	cfg.ReportHistoryLevel = Level(marshaledConfig.ReportHistoryLevel)
 	cfg.FilePath = path
 
 	if cfg.UserName == "" && cfg.Password == "" {

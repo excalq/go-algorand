@@ -19,91 +19,104 @@ package logging
 import (
 	"fmt"
 
-	"github.com/olivere/elastic"
-	"github.com/sirupsen/logrus"
-	"gopkg.in/sohlich/elogrus.v3"
+	"github.com/rs/zerolog"
 
 	"github.com/algorand/go-algorand/util/metrics"
 )
 
 var telemetryDrops = metrics.MakeCounter(metrics.MetricName{Name: "algod_telemetry_drops_total", Description: "telemetry messages not sent to server"})
 
-func createAsyncHook(wrappedHook logrus.Hook, channelDepth uint, maxQueueDepth int) *asyncTelemetryHook {
-	return createAsyncHookLevels(wrappedHook, channelDepth, maxQueueDepth, makeLevels(logrus.InfoLevel))
+func createAsyncHook(wrappedHook Hook, channelDepth uint, maxQueueDepth int) *asyncTelemetryHook {
+	return createAsyncHookLevels(wrappedHook, channelDepth, maxQueueDepth)
 }
 
-func createAsyncHookLevels(wrappedHook logrus.Hook, channelDepth uint, maxQueueDepth int, levels []logrus.Level) *asyncTelemetryHook {
-	// needed by 'makeTelemetryTestFixtureWithConfig' to mark ready in unit tests.
-	tfh, ok := wrappedHook.(*telemetryFilteredHook)
-	ready := ok && tfh.wrappedHook != nil
-
-	hook := &asyncTelemetryHook{
+// FIXME(@excalq): This need to be refactored, as its too tightly coupled to Logrus' hook leveling
+func createAsyncHookLevels(wrappedHook Hook, channelDepth uint, maxQueueDepth int) *asyncTelemetryHook {
+	
+	//////////
+	// @TODO: Remove this no-op shim when the function is refactored
+	return &asyncTelemetryHook{
 		wrappedHook:   wrappedHook,
-		entries:       make(chan *logrus.Entry, channelDepth),
+		entries:       make(chan *zerolog.Event, channelDepth),
 		quit:          make(chan struct{}),
 		maxQueueDepth: maxQueueDepth,
-		levels:        levels,
-		ready:         ready,
+		ready:         false, // @excalq: hard-coded for no-op return
 		urlUpdate:     make(chan bool),
 	}
+	//////////
+	
+	// FIXME: @excalq: Disabled for refactoring
+	// // needed by 'makeTelemetryTestFixtureWithConfig' to mark ready in unit tests.
+	// tfh, ok := wrappedHook.(*telemetryFilteredHook)
+	// ready := ok && tfh.wrappedHook != nil
 
-	go func() {
-		defer func() {
-			// flush the channel
-			moreEntries := true
-			for moreEntries {
-				select {
-				case entry := <-hook.entries:
-					hook.appendEntry(entry)
-				default:
-					moreEntries = false
-				}
-			}
-			for range hook.pending {
-				// The telemetry service is
-				// exiting. Un-wait for the left out
-				// messages.
-				hook.wg.Done()
-			}
-			hook.wg.Done()
-		}()
+	// hook := &asyncTelemetryHook{
+	// 	wrappedHook:   wrappedHook,
+	// 	entries:       make(chan *zerolog.Event, channelDepth),
+	// 	quit:          make(chan struct{}),
+	// 	maxQueueDepth: maxQueueDepth,
+	// 	levels:        levels,
+	// 	ready:         ready,
+	// 	urlUpdate:     make(chan bool),
+	// }
 
-		exit := false
-		for !exit {
-			exit = !hook.waitForEventAndReady()
+	// go func() {
+	// 	defer func() {
+	// 		// flush the channel
+	// 		moreEntries := true
+	// 		for moreEntries {
+	// 			select {
+	// 			case entry := <-hook.entries:
+	// 				hook.appendEntry(entry)
+	// 			default:
+	// 				moreEntries = false
+	// 			}
+	// 		}
+	// 		for range hook.pending {
+	// 			// The telemetry service is
+	// 			// exiting. Un-wait for the left out
+	// 			// messages.
+	// 			hook.wg.Done()
+	// 		}
+	// 		hook.wg.Done()
+	// 	}()
 
-			hasEvents := true
-			for hasEvents {
-				select {
-				case entry := <-hook.entries:
-					hook.appendEntry(entry)
-				default:
-					hook.Lock()
-					var entry *logrus.Entry
-					if len(hook.pending) > 0 && hook.ready {
-						entry = hook.pending[0]
-						hook.pending = hook.pending[1:]
-					}
-					hook.Unlock()
-					if entry != nil {
-						err := hook.wrappedHook.Fire(entry)
-						if err != nil {
-							Base().Warnf("Unable to write event %#v to telemetry : %v", entry, err)
-						}
-						hook.wg.Done()
-					} else {
-						hasEvents = false
-					}
-				}
-			}
-		}
-	}()
+	// 	exit := false
+	// 	for !exit {
+	// 		exit = !hook.waitForEventAndReady()
 
-	return hook
+	// 		hasEvents := true
+	// 		for hasEvents {
+	// 			select {
+	// 			case entry := <-hook.entries:
+	// 				hook.appendEntry(entry)
+	// 			default:
+	// 				hook.Lock()
+	// 				var entry *zerolog.Event
+	// 				if len(hook.pending) > 0 && hook.ready {
+	// 					entry = hook.pending[0]
+	// 					hook.pending = hook.pending[1:]
+	// 				}
+	// 				hook.Unlock()
+	// 				if entry != nil {
+	// 					err := hook.wrappedHook.Run(entry, level, "")
+	// 					if err != nil {
+	// 						Base().Warnf("Unable to write event %#v to telemetry : %v", entry, err)
+	// 					}
+	// 					hook.wg.Done()
+	// 				} else {
+	// 					hasEvents = false
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }()
+    // 
+	// return hook
 }
 
 // appendEntry adds the given entry to the pending slice and returns whether the hook is ready or not.
-func (hook *asyncTelemetryHook) appendEntry(entry *logrus.Entry) bool {
+func (hook *asyncTelemetryHook) appendEntry(entry *zerolog.Event) bool {
 	hook.Lock()
 	defer hook.Unlock()
 	// TODO: If there are errors at startup, before the telemetry URI is set, this can fill up. Should we prioritize
@@ -144,8 +157,9 @@ func (hook *asyncTelemetryHook) waitForEventAndReady() bool {
 	}
 }
 
-// Fire is required to implement logrus hook interface
-func (hook *asyncTelemetryHook) Fire(entry *logrus.Entry) error {
+// Fire is required to implement zerolog hook interface
+// @excalq: This is broken, need refactoring
+func (hook *asyncTelemetryHook) Run(entry *zerolog.Event, level zerolog.Level, message string)  {
 	hook.wg.Add(1)
 	select {
 	case <-hook.quit:
@@ -159,16 +173,6 @@ func (hook *asyncTelemetryHook) Fire(entry *logrus.Entry) error {
 		// metrics is a different mechanism that will never block
 		telemetryDrops.Inc(nil)
 	}
-	return nil
-}
-
-// Levels Required for logrus hook interface
-func (hook *asyncTelemetryHook) Levels() []logrus.Level {
-	if hook.wrappedHook != nil {
-		return hook.wrappedHook.Levels()
-	}
-
-	return hook.levels
 }
 
 func (hook *asyncTelemetryHook) Close() {
@@ -184,18 +188,18 @@ func (hook *asyncTelemetryHook) Flush() {
 func (hook *dummyHook) UpdateHookURI(uri string) (err error) {
 	return
 }
-func (hook *dummyHook) Levels() []logrus.Level {
-	return []logrus.Level{}
+func (hook *dummyHook) Levels() []zerolog.Level {
+	return []zerolog.Level{}
 }
-func (hook *dummyHook) Fire(entry *logrus.Entry) error {
-	return nil
+func (hook *dummyHook) Run(entry *zerolog.Event, level zerolog.Level, message string) {
+	return
 }
 func (hook *dummyHook) Close() {
 }
 func (hook *dummyHook) Flush() {
 }
 
-func (hook *dummyHook) appendEntry(entry *logrus.Entry) bool {
+func (hook *dummyHook) appendEntry(entry *zerolog.Event) bool {
 	return true
 }
 func (hook *dummyHook) waitForEventAndReady() bool {
@@ -206,53 +210,57 @@ func (hook *dummyHook) waitForEventAndReady() bool {
 // into our own logging system.
 type elasticClientLogger struct {
 	logger Logger       // points to the underlying logger which would perform the logging
-	level  logrus.Level // indicate what logging level we want to use for the logging
+	level  zerolog.Level // indicate what logging level we want to use for the logging
 }
 
 // Printf tunnel the log string into the log file.
 func (el elasticClientLogger) Printf(format string, v ...interface{}) {
 	switch el.level {
-	case logrus.DebugLevel:
+	case zerolog.DebugLevel:
 		el.logger.Debugf(format, v...)
-	case logrus.InfoLevel:
+	case zerolog.InfoLevel:
 		el.logger.Infof(format, v...)
-	case logrus.WarnLevel:
+	case zerolog.WarnLevel:
 		el.logger.Warnf(format, v...)
 	default:
 		el.logger.Errorf(format, v...)
 	}
 }
 
-func createElasticHook(cfg TelemetryConfig) (hook logrus.Hook, err error) {
+func createElasticHook(cfg TelemetryConfig) (hook zerolog.Hook, err error) {
 	// Returning an error here causes issues... need the hooks to be created even if the elastic hook fails so that
 	// things can recover later.
 	if cfg.URI == "" {
 		return nil, nil
 	}
+	// @excalq: no-op return value
+	return zerolog.NewLevelHook().NoLevelHook, nil
 
-	client, err := elastic.NewClient(elastic.SetURL(cfg.URI),
-		elastic.SetBasicAuth(cfg.UserName, cfg.Password),
-		elastic.SetSniff(false),
-		elastic.SetGzip(true),
-		elastic.SetTraceLog(&elasticClientLogger{logger: Base(), level: logrus.DebugLevel}),
-		elastic.SetInfoLog(&elasticClientLogger{logger: Base(), level: logrus.DebugLevel}),
-		elastic.SetErrorLog(&elasticClientLogger{logger: Base(), level: logrus.WarnLevel}),
-	)
-	if err != nil {
-		err = fmt.Errorf("Unable to create new elastic client on '%s' using '%s:%s' : %w", cfg.URI, cfg.UserName, cfg.Password, err)
-		return nil, err
-	}
-	hostName := cfg.getHostGUID()
-	hook, err = elogrus.NewElasticHook(client, hostName, cfg.MinLogLevel, cfg.ChainID)
+	// FIXME: @excalq: Disabled for refactoring
 
-	if err != nil {
-		err = fmt.Errorf("Unable to create new elastic hook on host '%s' using chainID '%s' : %w", hostName, cfg.ChainID, err)
-	}
-	return hook, err
+	// client, err := elastic.NewClient(elastic.SetURL(cfg.URI),
+	// 	elastic.SetBasicAuth(cfg.UserName, cfg.Password),
+	// 	elastic.SetSniff(false),
+	// 	elastic.SetGzip(true),
+	// 	elastic.SetTraceLog(&elasticClientLogger{logger: Base(), level: zerolog.DebugLevel}),
+	// 	elastic.SetInfoLog(&elasticClientLogger{logger: Base(), level: zerolog.DebugLevel}),
+	// 	elastic.SetErrorLog(&elasticClientLogger{logger: Base(), level: zerolog.WarnLevel}),
+	// )
+	// if err != nil {
+	// 	err = fmt.Errorf("Unable to create new elastic client on '%s' using '%s:%s' : %w", cfg.URI, cfg.UserName, cfg.Password, err)
+	// 	return nil, err
+	// }
+	// hostName := cfg.getHostGUID()
+	// hook, err = elogrus.NewElasticHook(client, hostName, cfg.MinLogLevel, cfg.ChainID)
+
+	// if err != nil {
+	// 	err = fmt.Errorf("Unable to create new elastic hook on host '%s' using chainID '%s' : %w", hostName, cfg.ChainID, err)
+	// }
+	// return hook, err
 }
 
 // createTelemetryHook creates the Telemetry log hook, or returns nil if remote logging is not enabled
-func createTelemetryHook(cfg TelemetryConfig, history *logBuffer, hookFactory hookFactory) (hook logrus.Hook, err error) {
+func createTelemetryHook(cfg TelemetryConfig, history *logBuffer, hookFactory hookFactory) (hook zerolog.Hook, err error) {
 	if !cfg.Enable {
 		return nil, fmt.Errorf("createTelemetryHook called when telemetry not enabled")
 	}
@@ -271,37 +279,40 @@ func createTelemetryHook(cfg TelemetryConfig, history *logBuffer, hookFactory ho
 // Note: This will be removed with the externalized telemetry project. Return whether or not the URI was successfully
 //       updated.
 func (hook *asyncTelemetryHook) UpdateHookURI(uri string) (err error) {
-	updated := false
+	
+	// FIXME: @excalq: Disabled for refactoring
+	return nil
+	
+	// updated := false
+	// if hook.wrappedHook == nil {
+	// 	return fmt.Errorf("asyncTelemetryHook.wrappedHook is nil")
+	// }
 
-	if hook.wrappedHook == nil {
-		return fmt.Errorf("asyncTelemetryHook.wrappedHook is nil")
-	}
+	// tfh, ok := hook.wrappedHook.(*telemetryFilteredHook)
+	// if ok {
+	// 	hook.Lock()
 
-	tfh, ok := hook.wrappedHook.(*telemetryFilteredHook)
-	if ok {
-		hook.Lock()
+	// 	copy := tfh.telemetryConfig
+	// 	copy.URI = uri
+	// 	var newHook zerolog.Hook
+	// 	newHook, err = tfh.factory(copy)
 
-		copy := tfh.telemetryConfig
-		copy.URI = uri
-		var newHook logrus.Hook
-		newHook, err = tfh.factory(copy)
+	// 	if err == nil && newHook != nil {
+	// 		tfh.wrappedHook = newHook
+	// 		tfh.telemetryConfig.URI = uri
+	// 		hook.ready = true
+	// 		updated = true
+	// 	}
 
-		if err == nil && newHook != nil {
-			tfh.wrappedHook = newHook
-			tfh.telemetryConfig.URI = uri
-			hook.ready = true
-			updated = true
-		}
+	// 	// Need to unlock before sending event to hook.urlUpdate
+	// 	hook.Unlock()
 
-		// Need to unlock before sending event to hook.urlUpdate
-		hook.Unlock()
-
-		// Notify event listener if the hook was created.
-		if updated {
-			hook.urlUpdate <- true
-		}
-	} else {
-		return fmt.Errorf("asyncTelemetryHook.wrappedHook does not implement telemetryFilteredHook")
-	}
-	return
+	// 	// Notify event listener if the hook was created.
+	// 	if updated {
+	// 		hook.urlUpdate <- true
+	// 	}
+	// } else {
+	// 	return fmt.Errorf("asyncTelemetryHook.wrappedHook does not implement telemetryFilteredHook")
+	// }
+	// return
 }

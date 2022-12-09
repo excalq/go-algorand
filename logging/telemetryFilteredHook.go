@@ -17,25 +17,24 @@
 package logging
 
 import (
-	"errors"
 	"strings"
 
-	"github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
 )
 
 type telemetryFilteredHook struct {
 	telemetryConfig TelemetryConfig
-	wrappedHook     logrus.Hook
-	reportLogLevel  logrus.Level
+	wrappedHook     Hook
+	reportLogLevel  Level
 	history         *logBuffer
 	sessionGUID     string
 	factory         hookFactory
-	levels          []logrus.Level
+	levels          []Level
 }
 
 // newFilteredTelemetryHook creates a hook filter for ensuring telemetry events are
 // always included by the wrapped log hook.
-func newTelemetryFilteredHook(cfg TelemetryConfig, hook logrus.Hook, reportLogLevel logrus.Level, history *logBuffer, sessionGUID string, factory hookFactory, levels []logrus.Level) (logrus.Hook, error) {
+func newTelemetryFilteredHook(cfg TelemetryConfig, hook Hook, reportLogLevel Level, history *logBuffer, sessionGUID string, factory hookFactory, levels []Level) (Hook, error) {
 	filteredHook := &telemetryFilteredHook{
 		cfg,
 		hook,
@@ -48,53 +47,58 @@ func newTelemetryFilteredHook(cfg TelemetryConfig, hook logrus.Hook, reportLogLe
 	return filteredHook, nil
 }
 
-// Fire is required to implement logrus hook interface
-func (hook *telemetryFilteredHook) Fire(entry *logrus.Entry) error {
+// Run is required to implement zerolog hook interface
+func (hook *telemetryFilteredHook) Run(entry *zerolog.Event, level Level, message string) {
+
+	// NOTE(@excalq): Zerolog.Hook's interface does not include an error return, so disabling errors. Not awesome. :(
 	// Just in case
 	if hook.wrappedHook == nil {
-		return errors.New("the wrapped hook has not been initialized")
+		return
+		// return errors.New("the wrapped hook has not been initialized")
 	}
 
 	// Don't include log history when logging debug.Stack() - just pass it through.
-	if entry.Level == logrus.ErrorLevel && strings.HasPrefix(entry.Message, stackPrefix) {
-		return hook.wrappedHook.Fire(entry)
+	if level == Error && strings.HasPrefix(message, stackPrefix) {
+		return
+		// return hook.wrappedHook.Run(entry, level, message)
 	}
 
-	if entry.Level <= hook.reportLogLevel {
-		// Logging entry at a level which should include log history
-		// Create a new entry augmented with the history field.
-		newEntry := entry.WithFields(Fields{"log": hook.history.string(), "session": hook.sessionGUID, "v": hook.telemetryConfig.Version})
-		newEntry.Time = entry.Time
-		newEntry.Level = entry.Level
-		newEntry.Message = entry.Message
+	// @excalq: Zerolog.Event gives no external access to needed fields. Can we do this differently,
+	// or is that a dealbreaker for using Zerolog? Could history telemetry happen in an 
+	// external goroutine, rather than in hooks?
+	// See https://github.com/rs/zerolog/pull/395
 
-		hook.history.trim() // trim history log so we don't keep sending a lot of redundant logs
+	// if level <= hook.reportLogLevel {
+	// 	// Logging entry at a level which should include log history
+	// 	// Create a new entry augmented with the history field.
+	// 	newEntry := entry.Fields(Fields{
+	// 		"log": hook.history.string(), 
+	// 		"session": hook.sessionGUID, 
+	// 		"v": hook.telemetryConfig.Version,
+	// 	})
+	// 	newEntry.Time = entry.Time
+	// 	newEntry.Level = entry.Level
+	// 	newEntry.Message = entry.Message
 
-		return hook.wrappedHook.Fire(newEntry)
-	}
+	// 	hook.history.trim() // trim history log so we don't keep sending a lot of redundant logs
+
+	// 	return hook.wrappedHook.Run(newEntry)
+	// }
 
 	// If we're not including log history and session GUID, create a new
 	// entry that includes the session GUID, unless it is already present
 	// (which it will be for regular telemetry events)
-	var newEntry *logrus.Entry
-	if _, has := entry.Data["session"]; has {
-		newEntry = entry
-	} else {
-		newEntry = entry.WithField("session", hook.sessionGUID)
-	}
+	// var newEntry *zerolog.Event
+	// if _, has := entry.Data["session"]; has {
+	// 	newEntry = entry
+	// } else {
+	// 	newEntry = entry.WithField("session", hook.sessionGUID)
+	// }
 
-	// Also add version field, if not already present.
-	if _, has := entry.Data["v"]; !has {
-		newEntry = newEntry.WithField("v", hook.telemetryConfig.Version)
-	}
-	return hook.wrappedHook.Fire(newEntry)
+	// // Also add version field, if not already present.
+	// if _, has := entry.Data["v"]; !has {
+	// 	newEntry = newEntry.WithField("v", hook.telemetryConfig.Version)
+	// }
+	// return hook.wrappedHook.Run(newEntry)
 }
 
-// Levels Required for logrus hook interface
-func (hook *telemetryFilteredHook) Levels() []logrus.Level {
-	if hook.wrappedHook != nil {
-		return hook.wrappedHook.Levels()
-	}
-
-	return hook.levels
-}

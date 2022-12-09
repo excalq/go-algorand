@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/algorand/go-deadlock"
-	"github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
 
 	"github.com/algorand/go-algorand/logging/telemetryspec"
 )
@@ -36,13 +36,13 @@ type TelemetryOperation struct {
 }
 
 type telemetryHook interface {
-	Fire(entry *logrus.Entry) error
-	Levels() []logrus.Level
+	// Run(entry *zerolog.Event) error
+	Run(e *zerolog.Event, level Level, message string)
 	Close()
 	Flush()
 	UpdateHookURI(uri string) (err error)
 
-	appendEntry(entry *logrus.Entry) bool
+	appendEntry(entry *zerolog.Event) bool
 	waitForEventAndReady() bool
 }
 
@@ -54,13 +54,15 @@ type telemetryState struct {
 
 // TelemetryConfig represents the configuration of Telemetry logging
 type TelemetryConfig struct {
-	Enable             bool
-	SendToLog          bool
+	Enable             bool      // Enable remote telemetry
+	SendToLog          bool      // Include telemetry events in local log
 	URI                string
 	Name               string
 	GUID               string
-	MinLogLevel        logrus.Level `json:"-"` // these are the logrus.Level, but we can't use it directly since on logrus version 1.4.2 they added
-	ReportHistoryLevel logrus.Level `json:"-"` // text marshalers which breaks our backward compatibility.
+	// !!! WARNING !!!
+	// TODO(2022-12-01): Refactoring to zerolog/Zap would have a breaking change. Leveling in Logrus (Panic==0) is reverse of Zerolog & Zap (Debug==0)
+	MinLogLevel        zerolog.Level `json:"-"` // these are the logrus.Level, but we can't use it directly since on logrus version 1.4.2 they added
+	ReportHistoryLevel zerolog.Level `json:"-"` // text marshalers which breaks our backward compatibility.
 	FilePath           string       // Path to file on disk, if any
 	ChainID            string       `json:"-"`
 	SessionGUID        string       `json:"-"`
@@ -80,13 +82,12 @@ type MarshalingTelemetryConfig struct {
 
 type asyncTelemetryHook struct {
 	deadlock.Mutex
-	wrappedHook   logrus.Hook
+	wrappedHook   zerolog.Hook
 	wg            sync.WaitGroup
-	pending       []*logrus.Entry
-	entries       chan *logrus.Entry
+	pending       []*zerolog.Event
+	entries       chan *zerolog.Event
 	quit          chan struct{}
 	maxQueueDepth int
-	levels        []logrus.Level
 	ready         bool
 	urlUpdate     chan bool
 }
@@ -94,4 +95,4 @@ type asyncTelemetryHook struct {
 // A dummy noop type to get rid of checks like telemetry.hook != nil
 type dummyHook struct{}
 
-type hookFactory func(cfg TelemetryConfig) (logrus.Hook, error)
+type hookFactory func(cfg TelemetryConfig) (Hook, error)
