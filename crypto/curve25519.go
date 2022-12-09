@@ -55,7 +55,6 @@ const masterDerivationKeyLenBytes = 32
 
 func init() {
 	if C.sodium_init() < 0 {
-		logging.Init()
 		logging.Base().Fatal("failed to initialize libsodium!")
 	}
 
