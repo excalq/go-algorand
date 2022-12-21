@@ -32,7 +32,6 @@ const stackPrefix = "[Stack]" // For filtering stack traces
 const TimeFormatRFC3339Micro = "2006-01-02T15:04:05.999999Z07:00"
 
 // Allows other packages to use zerolog's types (and levels)
-type Hook = zerolog.Hook
 type Fields map[string]interface{}
 
 type logFacade struct {

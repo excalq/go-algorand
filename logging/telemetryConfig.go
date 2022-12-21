@@ -22,11 +22,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/util/uuid"
 )
+
+// Note on Levels: Config files use a different level numbering scheme the codebase
+// Due to refactoring from Logrus to Zerolog. logLevels.go provides translation when
+// reading/saving the config. The codebase uses zerolog's native scheme for performance.
 
 // TelemetryConfigFilename default file name for telemetry config "logging.config"
 var TelemetryConfigFilename = "logging.config"
@@ -87,8 +92,8 @@ func (cfg TelemetryConfig) Save(configPath string) error {
 	var marshaledConfig MarshalingTelemetryConfig
 	marshaledConfig.TelemetryConfig = cfg
 	marshaledConfig.TelemetryConfig.FilePath = ""
-	marshaledConfig.MinLogLevel = uint32(cfg.MinLogLevel)
-	marshaledConfig.ReportHistoryLevel = uint32(cfg.ReportHistoryLevel)
+	marshaledConfig.MinLogLevel = LevelToConfigValue(cfg.MinLogLevel)
+	marshaledConfig.ReportHistoryLevel = LevelToConfigValue(cfg.ReportHistoryLevel)
 
 	// If the configuration contains both default username and password for the telemetry
 	// server then we just want to substitute a blank string
@@ -149,8 +154,9 @@ func loadTelemetryConfig(path string) (TelemetryConfig, error) {
 	dec := json.NewDecoder(f)
 	err = dec.Decode(&marshaledConfig)
 	cfg = marshaledConfig.TelemetryConfig
-	cfg.MinLogLevel = Level(marshaledConfig.MinLogLevel)
-	cfg.ReportHistoryLevel = Level(marshaledConfig.ReportHistoryLevel)
+	// Errors will also return Debug
+	cfg.MinLogLevel, err = LevelFromConfigValue(int32(marshaledConfig.MinLogLevel))
+	cfg.ReportHistoryLevel, err = LevelFromConfigValue(int32(marshaledConfig.ReportHistoryLevel))
 	cfg.FilePath = path
 
 	if cfg.UserName == "" && cfg.Password == "" {
@@ -164,4 +170,138 @@ func loadTelemetryConfig(path string) (TelemetryConfig, error) {
 	}
 
 	return cfg, err
+}
+
+
+// ReadTelemetryConfigOrDefault reads telemetry config from file or defaults if no config file found.
+func ReadTelemetryConfigOrDefault(dataDir string, genesisID string) (cfg TelemetryConfig, err error) {
+	err = nil
+	dataDirProvided := dataDir != ""
+	var configPath string
+
+	// If we have a data directory, then load the config
+	if dataDirProvided {
+		configPath = filepath.Join(dataDir, TelemetryConfigFilename)
+		// Load the config, if the GUID is there then we are all set
+		// However if it isn't there then we must create it, save the file and load it.
+		cfg, err = LoadTelemetryConfig(configPath)
+	}
+
+	// We couldn't load the telemetry config for some reason
+	// If the reason is because the directory doesn't exist or we didn't provide a data directory then...
+	if (err != nil && os.IsNotExist(err)) || !dataDirProvided {
+
+		configPath, err = config.GetConfigFilePath(TelemetryConfigFilename)
+		if err != nil {
+			// If the path could not be opened do nothing, the IsNotExist error
+			// is handled below.
+		} else {
+			// Load the telemetry from the default config path
+			cfg, err = LoadTelemetryConfig(configPath)
+		}
+	}
+
+	// If there was some error loading the configuration from the config path...
+	if err != nil {
+		// Create an ephemeral config
+		cfg = createTelemetryConfig()
+
+		// If the error was that the the config wasn't there then it wasn't really an error
+		if os.IsNotExist(err) {
+			err = nil
+		} else {
+			// The error was actually due to a malformed config file...just return
+			return
+		}
+	}
+	ver := config.GetCurrentVersion()
+	ch := ver.Channel
+	// Should not happen, but default to "dev" if channel is unspecified.
+	if ch == "" {
+		ch = "dev"
+	}
+	cfg.ChainID = fmt.Sprintf("%s-%s", ch, genesisID)
+	cfg.Version = ver.String()
+	return cfg, err
+}
+
+// EnsureTelemetryConfig creates a new TelemetryConfig structure with a generated GUID and the appropriate Telemetry endpoint
+// Err will be non-nil if the file doesn't exist, or if error loading.
+// Cfg will always be valid.
+func EnsureTelemetryConfig(dataDir *string, genesisID string) (TelemetryConfig, error) {
+	cfg, _, err := EnsureTelemetryConfigCreated(dataDir, genesisID)
+	return cfg, err
+}
+
+// EnsureTelemetryConfigCreated is the same as EnsureTelemetryConfig but it also returns a bool indicating
+// whether EnsureTelemetryConfig had to create the config.
+func EnsureTelemetryConfigCreated(dataDir *string, genesisID string) (TelemetryConfig, bool, error) {
+	/*
+		Our logic should be as follows:
+			- We first look inside the provided data-directory.  If a config file is there, load it
+			  and return it
+			- Otherwise, look in the global directory.  If a config file is there, load it and return it.
+			- Otherwise, if a data-directory was provided then save the config file there.
+			- Otherwise, save the config file in the global directory
+	*/
+
+	configPath := ""
+	var cfg TelemetryConfig
+	var err error
+
+	if dataDir != nil && *dataDir != "" {
+		configPath = filepath.Join(*dataDir, TelemetryConfigFilename)
+		cfg, err = LoadTelemetryConfig(configPath)
+		if err != nil && os.IsNotExist(err) {
+			// if it just didn't exist, try again at the other path
+			configPath = ""
+		}
+	}
+	if configPath == "" {
+		configPath, err = config.GetConfigFilePath(TelemetryConfigFilename)
+		if err != nil {
+			cfg := createTelemetryConfig()
+			// Since GetConfigFilePath failed, there is no chance that we
+			// can save the next config files
+			return cfg, true, err
+		}
+		cfg, err = LoadTelemetryConfig(configPath)
+	}
+	created := false
+	if err != nil {
+		created = true
+		cfg = createTelemetryConfig()
+
+		if dataDir != nil && *dataDir != "" {
+
+			/*
+				There could be a scenario where a data directory was supplied that doesn't exist.
+				In that case, we don't want to create the directory, just save in the global one
+			*/
+
+			// If the directory exists...
+			if _, err := os.Stat(*dataDir); err == nil {
+
+				// Remember, if we had a data directory supplied we want to save the config there
+				configPath = filepath.Join(*dataDir, TelemetryConfigFilename)
+			}
+
+		}
+
+		cfg.FilePath = configPath // Initialize our desired cfg.FilePath
+
+		// There was no config file, create it.
+		err = cfg.Save(configPath)
+	}
+
+	ver := config.GetCurrentVersion()
+	ch := ver.Channel
+	// Should not happen, but default to "dev" if channel is unspecified.
+	if ch == "" {
+		ch = "dev"
+	}
+	cfg.ChainID = fmt.Sprintf("%s-%s", ch, genesisID)
+	cfg.Version = ver.String()
+
+	return cfg, created, err
 }

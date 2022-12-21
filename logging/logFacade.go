@@ -35,7 +35,7 @@ func (l logFacade) SetJSONFormatter() {
 
 // Register hooks onto Zerolog Events
 func (l logFacade) AddHook(hook telemetryHook) {
-	// FIXME(@excalq) l.log.Hook(hook)
+	l.log.Hook(hook)
 	l.log.Info().Msg("New logging hook registered.")
 }
 

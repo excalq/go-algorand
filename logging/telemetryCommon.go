@@ -35,14 +35,17 @@ type TelemetryOperation struct {
 	pending        int32
 }
 
+// Abstract the logging library's Hook type
+type Hook = zerolog.Hook
+type Entry = zerolog.Event // Like Logrus.Entry
+
+// AsyncHook, fired by logging library
 type telemetryHook interface {
-	// Run(entry *zerolog.Event) error
-	Run(e *zerolog.Event, level Level, message string)
+	Run(e *Entry, level Level, message string)
 	Close()
 	Flush()
 	UpdateHookURI(uri string) (err error)
-
-	appendEntry(entry *zerolog.Event) bool
+	appendEntry(entry *Entry) bool
 	waitForEventAndReady() bool
 }
 
@@ -59,10 +62,9 @@ type TelemetryConfig struct {
 	URI                string
 	Name               string
 	GUID               string
-	// !!! WARNING !!!
-	// TODO(2022-12-01): Refactoring to zerolog/Zap would have a breaking change. Leveling in Logrus (Panic==0) is reverse of Zerolog & Zap (Debug==0)
-	MinLogLevel        zerolog.Level `json:"-"` // these are the logrus.Level, but we can't use it directly since on logrus version 1.4.2 they added
-	ReportHistoryLevel zerolog.Level `json:"-"` // text marshalers which breaks our backward compatibility.
+	// Note that levels are translated to/from config, and use zerolog's native numbering here. See logLevels.go
+	MinLogLevel        Level `json:"-"` // Custom marshalled for backward compatibility
+	ReportHistoryLevel Level `json:"-"` // Custom marshalled
 	FilePath           string       // Path to file on disk, if any
 	ChainID            string       `json:"-"`
 	SessionGUID        string       `json:"-"`
@@ -80,12 +82,13 @@ type MarshalingTelemetryConfig struct {
 	ReportHistoryLevel uint32
 }
 
+// 
 type asyncTelemetryHook struct {
 	deadlock.Mutex
-	wrappedHook   zerolog.Hook
+	teleDecorator   telemetryDecorator
 	wg            sync.WaitGroup
-	pending       []*zerolog.Event
-	entries       chan *zerolog.Event
+	pending       []*Entry
+	entries       chan *Entry
 	quit          chan struct{}
 	maxQueueDepth int
 	ready         bool
@@ -95,4 +98,4 @@ type asyncTelemetryHook struct {
 // A dummy noop type to get rid of checks like telemetry.hook != nil
 type dummyHook struct{}
 
-type hookFactory func(cfg TelemetryConfig) (Hook, error)
+type shipperFactory func(cfg TelemetryConfig) (*telemetryShipper, error)

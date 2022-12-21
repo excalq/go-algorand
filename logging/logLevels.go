@@ -57,6 +57,7 @@ const (
 	DebugConfig         // zerolog.DebugLevel=0
 )
 
+// Used for cfg.Save()
 var libraryToConfigValues = map[zerolog.Level]Level{
 	Debug: DebugConfig,
 	Info: InfoConfig,
