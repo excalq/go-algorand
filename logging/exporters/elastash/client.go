@@ -67,6 +67,7 @@ type Client struct {
 
 	mu                        sync.RWMutex    // guards the next block
 	url                       string          // set of URLs passed initially to the client
+	running                   bool            // true if the client's background processes are running
 	log         	          Logger          // logger passed from outter application
 	healthcheckEnabled        bool            // healthchecks enabled or disabled
 	healthcheckTimeout        time.Duration   // time the healthcheck waits for a response from Elasticsearch
@@ -76,6 +77,112 @@ type Client struct {
 	basicAuthPassword         string          // password for HTTP Basic Auth
 	gzipEnabled               bool            // gzip compression enabled or disabled (default)
 	retrier                   Retrier         // strategy for retries
+}
+
+// ClientOptionFunc is a function that configures a Client.
+// It is used in NewClient.
+type ClientOptionFunc func(*Client) error
+
+// NewClient creates a new client to work with Elasticsearch.
+//
+// NewClient, by default, is meant to be long-lived and shared across
+// your application. If you need a short-lived client, e.g. for request-scope,
+// consider using NewSimpleClient instead.
+//
+// The caller can configure the new client by passing configuration options
+// to the func.
+//
+// Example:
+//
+//   client, err := elastic.NewClient(
+//     elastic.SetURL("http://127.0.0.1:9200", "http://127.0.0.1:9201"),
+//     elastic.SetBasicAuth("user", "secret"))
+//
+// If no URL is configured, Elastic uses DefaultURL by default.
+//
+// If the sniffer is enabled (the default), the new client then sniffes
+// the cluster via the Nodes Info API
+// (see https://www.elastic.co/guide/en/elasticsearch/reference/6.2/cluster-nodes-info.html#cluster-nodes-info).
+// It uses the URLs specified by the caller. The caller is responsible
+// to only pass a list of URLs of nodes that belong to the same cluster.
+// This sniffing process is run on startup and periodically.
+// Use SnifferInterval to set the interval between two sniffs (default is
+// 15 minutes). In other words: By default, the client will find new nodes
+// in the cluster and remove those that are no longer available every
+// 15 minutes. Disable the sniffer by passing SetSniff(false) to NewClient.
+//
+// The list of nodes found in the sniffing process will be used to make
+// connections to the REST API of Elasticsearch. These nodes are also
+// periodically checked in a shorter time frame. This process is called
+// a health check. By default, a health check is done every 60 seconds.
+// You can set a shorter or longer interval by SetHealthcheckInterval.
+// Disabling health checks is not recommended, but can be done by
+// SetHealthcheck(false).
+//
+// Connections are automatically marked as dead or healthy while
+// making requests to Elasticsearch. When a request fails, Elastic will
+// call into the Retry strategy which can be specified with SetRetry.
+// The Retry strategy is also responsible for handling backoff i.e. the time
+// to wait before starting the next request. There are various standard
+// backoff implementations, e.g. ExponentialBackoff or SimpleBackoff.
+// Retries are disabled by default.
+//
+// If no HttpClient is configured, then http.DefaultClient is used.
+// You can use your own http.Client with some http.Transport for
+// advanced scenarios.
+//
+// An error is also returned when some configuration option is invalid or
+// the new client cannot sniff the cluster (if enabled).
+func NewClient(options ...ClientOptionFunc) (*Client, error) {
+	return DialContext(context.Background(), options...)
+}
+
+
+// DialContext will connect to Elasticsearch, just like NewClient does.
+//
+// The context is honoured in terms of e.g. cancellation.
+func DialContext(ctx context.Context, options ...ClientOptionFunc) (*Client, error) {
+	// Set up the client
+	c := &Client{
+		c:                         http.DefaultClient,
+		conns:                     make([]*conn, 0),
+		cindex:                    -1,
+		decoder:                   &DefaultDecoder{},
+		healthcheckEnabled:        DefaultHealthcheckEnabled,
+		healthcheckTimeout:        DefaultHealthcheckTimeout,
+		gzipEnabled:               DefaultGzipEnabled,
+		retrier:                   NewBackoffRetrier(),
+	}
+
+	// Run the options on it
+	for _, option := range options {
+		if err := option(c); err != nil {
+			return nil, err
+		}
+	}
+
+	// If the URLs have auth info, use them here as an alternative to SetBasicAuth
+	if !c.basicAuth {
+		u, err := url.Parse(c.url)
+		if err == nil && u.User != nil {
+			c.basicAuth = true
+			c.basicAuthUsername = u.User.Username()
+			c.basicAuthPassword, _ = u.User.Password()
+		}
+	}
+
+	c.conns = append(c.conns, newConn(c.url, c.url))
+
+	// Ensure that we have at least one connection available
+	if err := c.mustActiveConn(); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.running = true
+	c.mu.Unlock()
+
+	return c, nil
 }
 
 // Do executes the operation. Body is a JSON string
@@ -98,6 +205,45 @@ func (s *Client) Post(ctx context.Context, urlPath string, body interface{}) (*I
 		return nil, err
 	}
 	return ret, nil
+}
+
+// SetURL defines the URL endpoint of the Logstash/Elasticsearch node.
+func SetURL(url string) ClientOptionFunc {
+	return func(c *Client) error {
+		if url == "" {
+			c.url = DefaultURL
+		} else {
+			c.url = url
+		}
+		return nil
+	}
+}
+
+// SetBasicAuth can be used to specify the HTTP Basic Auth credentials to
+// use when making HTTP requests to Elasticsearch.
+func SetBasicAuth(username, password string) ClientOptionFunc {
+	return func(c *Client) error {
+		c.basicAuthUsername = username
+		c.basicAuthPassword = password
+		c.basicAuth = c.basicAuthUsername != "" || c.basicAuthPassword != ""
+		return nil
+	}
+}
+
+// SetGzip enables or disables gzip compression (disabled by default).
+func SetGzip(enabled bool) ClientOptionFunc {
+	return func(c *Client) error {
+		c.gzipEnabled = enabled
+		return nil
+	}
+}
+
+// SetLogger sets the logger for all levels
+func SetLogger(logger Logger) ClientOptionFunc {
+	return func(c *Client) error {
+		c.log = logger
+		return nil
+	}
 }
 
 // IndexResponse is the result of indexing a document in Elasticsearch. [Simplified]
@@ -319,6 +465,21 @@ func (c *Client) next() (*conn, error) {
 	// We tried hard, but there is no node available
 	return nil, errors.Wrap(ErrNoClient, "no available connection")
 }
+
+// mustActiveConn returns nil if there is an active connection,
+// otherwise ErrNoClient is returned.
+func (c *Client) mustActiveConn() error {
+	c.connsMu.Lock()
+	defer c.connsMu.Unlock()
+
+	for _, c := range c.conns {
+		if !c.IsDead() {
+			return nil
+		}
+	}
+	return errors.Wrap(ErrNoClient, "no active connection found")
+}
+
 
 // dumpRequest dumps the given HTTP request to the trace log.
 func (c *Client) dumpRequest(r *http.Request) {

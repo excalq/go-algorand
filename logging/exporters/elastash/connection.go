@@ -16,6 +16,15 @@ type conn struct {
 	deadSince *time.Time
 }
 
+// newConn creates a new connection to the given URL.
+func newConn(nodeID, url string) *conn {
+	c := &conn{
+		nodeID: nodeID,
+		url:    url,
+	}
+	return c
+}
+
 // String returns a representation of the connection status.
 func (c *conn) String() string {
 	c.RLock()
