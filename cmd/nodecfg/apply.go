@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
 	"github.com/algorand/go-algorand/netdeploy/remote"
@@ -57,26 +58,26 @@ var applyCmd = &cobra.Command{
 	Long:  `Apply a node configuration to a new host providing feedback on progress`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := validateArgs(); err != nil {
-			reportErrorf("Error validating arguments: %v", err)
+			log.Fatal().Err(err).Msgf("Error validating arguments: %v", err)
 		}
 
 		if applyRootNodeDir == "" {
 			applyRootNodeDir = filepath.Join(os.ExpandEnv("~/algorand"), applyChannel)
-			reportInfof("--rootnodedir / -n not specified, defaulting to %s", applyRootNodeDir)
+			log.Info().Msgf("--rootnodedir / -n not specified, defaulting to %s", applyRootNodeDir)
 		}
 
 		if !util.FileExists(filepath.Join(applyRootNodeDir, "algod")) {
-			reportErrorf("rootnodedir does not appear to be a valid algod installation - algod is missing\n")
+			log.Fatal().Msg("rootnodedir does not appear to be a valid algod installation - algod is missing\n")
 		}
 
 		// Force all nodes to be under the <bin>/data folder.
 		applyRootNodeDir = filepath.Join(applyRootNodeDir, "data")
 		if err := os.Mkdir(applyRootNodeDir, 0700); err != nil && !os.IsExist(err) {
-			reportErrorf("Error creating data dir: %v", err)
+			log.Fatal().Err(err).Msgf("Error creating data dir: %v", err)
 		}
 
 		if err := doApply(applyRootDir, applyRootNodeDir, applyChannel, applyHostName, applyPublicAddress); err != nil {
-			reportErrorf("Error applying configuration: %v", err)
+			log.Fatal().Err(err).Msgf("Error applying configuration: %v", err)
 		}
 	},
 }

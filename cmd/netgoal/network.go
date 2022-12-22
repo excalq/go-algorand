@@ -23,6 +23,7 @@ import (
 	"runtime/pprof"
 	"strings"
 
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
 	"github.com/algorand/go-algorand/netdeploy/remote"
@@ -73,7 +74,7 @@ var networkBuildCmd = &cobra.Command{
 
 		err := runBuildNetwork()
 		if err != nil {
-			reportErrorf("error building network files: %v\n", err)
+			log.Fatal().Err(err).Msgf("error building network files: %v\n", err)
 		}
 	},
 }
@@ -82,11 +83,11 @@ func runBuildNetwork() (err error) {
 	if cpuprofilePath != "" {
 		f, err := os.Create(cpuprofilePath)
 		if err != nil {
-			log.Fatalf("%s: could not create CPU profile, %v", cpuprofilePath, err)
+			log.Fatal().Err(err).Msgf("%s: could not create CPU profile, %v", cpuprofilePath, err)
 		}
 		defer f.Close() // error handling omitted for example
 		if err := pprof.StartCPUProfile(f); err != nil {
-			log.Fatalf("%s: could not start CPU profile, %v", cpuprofilePath, err)
+			log.Fatal().Err(err).Msgf("%s: could not start CPU profile, %v", cpuprofilePath, err)
 		}
 		defer pprof.StopCPUProfile()
 	}

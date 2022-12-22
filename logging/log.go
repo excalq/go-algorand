@@ -1,100 +1,137 @@
-// Copyright 2015 The Prometheus Authors
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// Copyright (C) 2019-2022 Algorand, Inc.
+// This file is part of go-algorand
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+// go-algorand is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// Changes from original
-// - No more use of kingpin
-// - No more Error Log writer
-// - Extracted output setting from NewLogger
-// - Added support for function name as an addition
-// - Added support for WithFields
-// - General refactoring
-// - Added Testing
-// - No general log which is not created by NewLogger
-// - Added some base
-
-/*
-Example --
-To log to the base logger
-Base().Info("New wallet was created")
-
-To log to a new logger
-logger = NewLogger()
-logger.Info("New wallet was created")
-*/
+// go-algorand is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with go-algorand.  If not, see <https://www.gnu.org/licenses/>.
 
 package logging
 
 import (
 	"io"
-	"runtime"
-	"runtime/debug"
-	"strings"
-	"sync"
-
-	"github.com/sirupsen/logrus"
+	"os"
 
 	"github.com/algorand/go-algorand/logging/telemetryspec"
+	"github.com/rs/zerolog"
 )
 
-// Level refers to the log logging level
-type Level uint32
+// BaseLogger is a facade to Zerolog
+var baseLogger Logger
+var defaultOutput io.Writer = zerolog.ConsoleWriter{Out: os.Stderr} // Zerolog, Logrus' default
 
-// Create a general Base logger
-var (
-	baseLogger Logger
-)
+const stackPrefix = "[Stack]" // For filtering stack traces
+const TimeFormatRFC3339Micro = "2006-01-02T15:04:05.999999Z07:00"
 
-const (
-	// Panic Level level, highest level of severity. Logs and then calls panic with the
-	// message passed to Debug, Info, ...
-	Panic Level = iota
-	// Fatal Level level. Logs and then calls `os.Exit(1)`. It will exit even if the
-	// logging level is set to Panic.
-	Fatal
-	// Error Level level. Used for errors that should definitely be noted.
-	// Commonly used for hooks to send errors to an error tracking service.
-	Error
-	// Warn Level level. Non-critical entries that deserve eyes.
-	Warn
-	// Info Level level. General operational entries about what's going on inside the
-	// application.
-	Info
-	// Debug Level level. Usually only enabled when debugging. Very verbose logging.
-	Debug
-)
+// Allows other packages to use zerolog's types (and levels)
+type Fields map[string]interface{}
 
-const stackPrefix = "[Stack]"
+type logFacade struct {
+	log  zerolog.Logger
+	output io.Writer
+	telemetry *telemetryState
+}
 
-var once sync.Once
+// @excalq: Removed Init() with sync.once wrap, as that's probably 
+// less performant and unneccessary. O_APPEND is already atomic
 
-// Init needs to be called to ensure our logging has been initialized
-func Init() {
-	once.Do(func() {
-		// By default, log to stderr (logrus's default), only warnings and above.
+// Base returns the default Logger
+func Base() Logger {
+	if baseLogger == nil {
 		baseLogger = NewLogger()
-		baseLogger.SetLevel(Warn)
-	})
+		SetLoggerDefaults()
+	}
+	return baseLogger
 }
 
-func init() {
-	Init()
+// Returns a new instace of loggerFacade
+func NewLogger() Logger {
+	return &logFacade{
+		zerolog.New(defaultOutput).With().Timestamp().Logger(),
+		defaultOutput,
+		&telemetryState{},
+	}
 }
 
-// Fields maps logrus fields
-type Fields = logrus.Fields
+// Global Zerolog Config
 
-// Logger is the interface for loggers.
+// Set global logger defaults
+func SetLoggerDefaults() {
+	zerolog.TimeFieldFormat = TimeFormatRFC3339Micro
+}
+
+// Affects all instances of Zerolog loggers, process-wide
+func SetGlobalLevel(lvl Level) {
+	zerolog.SetGlobalLevel(zerolog.Level(lvl))
+}
+
+// LogFacade Interfaces
+
 type Logger interface {
+	LoggerConfig
+	LoggerInfo
+	ChainableLogger
+	PublishingLogger
+	// TODO: refactor further...
+	TelemetryManager
+}
+
+// These mutate the existing logFacade.log instance
+type LoggerConfig interface {
+	// Set the logging version (Info by default)
+	SetLevel(Level) *logFacade
+	
+	// Sets the output target
+	SetOutput(io.Writer)
+
+	// Human Readable k=v ANSI colored. Less performant
+	UsePrettyOutput(io.Writer)
+
+	// Sets the logger to performant JSON Format
+	SetJSONFormatter()
+	
+	// Adds a hook to the logger
+	AddHook(hook Hook)
+}
+
+// These do not mutate, only return values
+type LoggerInfo interface {
+
+	// Direct access to Zerolog. Lacks context and logging pkg types
+	Log() zerolog.Logger
+
+	IsLevelEnabled(Level) bool
+	
+	getOutput() io.Writer
+
+}
+
+// These methods can be chanined to one another
+// logFacade.log gets replaced with a new instance
+// due to zerolog's returning a new context
+type ChainableLogger interface {
+	// Add one key-value to log
+	With(key string, value interface{}) Logger
+	
+	// WithFields logs a message with specific fields
+	WithFields(Fields) Logger
+
+	// source adds file, line and function fields to the context
+	WithCaller() Logger
+}
+
+// These methods write log entries and return nothing
+// They can only end a chain of Logger methods.
+type PublishingLogger interface {
+
 	// Debug logs a message at level Debug.
 	Debug(...interface{})
 	Debugln(...interface{})
@@ -124,30 +161,9 @@ type Logger interface {
 	Panic(...interface{})
 	Panicln(...interface{})
 	Panicf(string, ...interface{})
+}
 
-	// Add one key-value to log
-	With(key string, value interface{}) Logger
-
-	// WithFields logs a message with specific fields
-	WithFields(Fields) Logger
-
-	// Set the logging version (Info by default)
-	SetLevel(Level)
-
-	// Sets the output target
-	SetOutput(io.Writer)
-
-	// Sets the logger to JSON Format
-	SetJSONFormatter()
-
-	IsLevelEnabled(level Level) bool
-
-	// source adds file, line and function fields to the event
-	source() *logrus.Entry
-
-	// Adds a hook to the logger
-	AddHook(hook logrus.Hook)
-
+type TelemetryManager interface {
 	EnableTelemetry(cfg TelemetryConfig) error
 	UpdateTelemetryURI(uri string) error
 	GetTelemetryEnabled() bool
@@ -157,315 +173,10 @@ type Logger interface {
 	EventWithDetails(category telemetryspec.Category, identifier telemetryspec.Event, details interface{})
 	StartOperation(category telemetryspec.Category, identifier telemetryspec.Operation) TelemetryOperation
 	GetTelemetrySession() string
+	GetTelemetryVersion() string
 	GetTelemetryGUID() string
 	GetInstanceName() string
 	GetTelemetryURI() string
 	CloseTelemetry()
-}
-
-type loggerState struct {
-	telemetry *telemetryState
-}
-
-type logger struct {
-	entry       *logrus.Entry
-	loggerState *loggerState
-}
-
-func (l logger) With(key string, value interface{}) Logger {
-	return logger{
-		l.entry.WithField(key, value),
-		l.loggerState,
-	}
-}
-
-func (l logger) Debug(args ...interface{}) {
-	l.source().Debug(args...)
-}
-
-func (l logger) Debugln(args ...interface{}) {
-	l.source().Debugln(args...)
-}
-
-func (l logger) Debugf(format string, args ...interface{}) {
-	l.source().Debugf(format, args...)
-}
-
-func (l logger) Info(args ...interface{}) {
-	l.source().Info(args...)
-}
-
-func (l logger) Infoln(args ...interface{}) {
-	l.source().Infoln(args...)
-}
-
-func (l logger) Infof(format string, args ...interface{}) {
-	l.source().Infof(format, args...)
-}
-
-func (l logger) Warn(args ...interface{}) {
-	l.source().Warn(args...)
-}
-
-func (l logger) Warnln(args ...interface{}) {
-	l.source().Warnln(args...)
-}
-
-func (l logger) Warnf(format string, args ...interface{}) {
-	l.source().Warnf(format, args...)
-}
-
-func (l logger) Error(args ...interface{}) {
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Error(args...)
-}
-
-func (l logger) Errorln(args ...interface{}) {
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Errorln(args...)
-}
-
-func (l logger) Errorf(format string, args ...interface{}) {
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Errorf(format, args...)
-}
-
-func (l logger) Fatal(args ...interface{}) {
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Fatal(args...)
-}
-
-func (l logger) Fatalln(args ...interface{}) {
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Fatalln(args...)
-}
-
-func (l logger) Fatalf(format string, args ...interface{}) {
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Fatalf(format, args...)
-}
-
-func (l logger) Panic(args ...interface{}) {
-	defer func() {
-		if r := recover(); r != nil {
-			l.FlushTelemetry()
-			panic(r)
-		}
-	}()
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Panic(args...)
-}
-
-func (l logger) Panicln(args ...interface{}) {
-	defer func() {
-		if r := recover(); r != nil {
-			l.FlushTelemetry()
-			panic(r)
-		}
-	}()
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Panicln(args...)
-}
-
-func (l logger) Panicf(format string, args ...interface{}) {
-	defer func() {
-		if r := recover(); r != nil {
-			l.FlushTelemetry()
-			panic(r)
-		}
-	}()
-	l.source().Errorln(stackPrefix, string(debug.Stack()))
-	l.source().Panicf(format, args...)
-}
-
-func (l logger) WithFields(fields Fields) Logger {
-	return logger{
-		l.source().WithFields(fields),
-		l.loggerState,
-	}
-}
-
-func (l logger) SetLevel(lvl Level) {
-	l.entry.Logger.Level = logrus.Level(lvl)
-}
-
-func (l logger) IsLevelEnabled(level Level) bool {
-	return l.entry.Logger.Level >= logrus.Level(level)
-}
-
-func (l logger) SetOutput(w io.Writer) {
-	if l.GetTelemetryEnabled() {
-		l.setOutput(l.loggerState.telemetry.wrapOutput(w))
-	} else {
-		l.setOutput(w)
-	}
-}
-
-func (l logger) setOutput(w io.Writer) {
-	l.entry.Logger.Out = w
-}
-
-func (l logger) getOutput() io.Writer {
-	return l.entry.Logger.Out
-}
-
-func (l logger) SetJSONFormatter() {
-	l.entry.Logger.Formatter = &logrus.JSONFormatter{TimestampFormat: "2006-01-02T15:04:05.000000Z07:00"}
-}
-
-func (l logger) source() *logrus.Entry {
-	event := l.entry
-
-	pc, file, line, ok := runtime.Caller(2)
-	if !ok {
-		file = "<???>"
-		line = 1
-		event = event.WithFields(logrus.Fields{
-			"file": file,
-			"line": line,
-		})
-	} else {
-		// Add file name and number
-		slash := strings.LastIndex(file, "/")
-		file = file[slash+1:]
-		event = event.WithFields(logrus.Fields{
-			"file": file,
-			"line": line,
-		})
-
-		// Add function name if possible
-		if function := runtime.FuncForPC(pc); function != nil {
-			event = event.WithField("function", function.Name())
-		}
-	}
-	return event
-}
-
-func (l logger) AddHook(hook logrus.Hook) {
-	l.entry.Logger.Hooks.Add(hook)
-}
-
-// Base returns the default Logger logging to
-func Base() Logger {
-	return baseLogger
-}
-
-// NewLogger returns a new Logger logging to out.
-func NewLogger() Logger {
-	l := logrus.New()
-	return NewWrappedLogger(l)
-}
-
-// NewWrappedLogger returns a new Logger that wraps an external logrus logger.
-func NewWrappedLogger(l *logrus.Logger) Logger {
-	out := logger{
-		logrus.NewEntry(l),
-		&loggerState{},
-	}
-	formatter := out.entry.Logger.Formatter
-	tf, ok := formatter.(*logrus.TextFormatter)
-	if ok {
-		tf.TimestampFormat = "2006-01-02T15:04:05.000000 -0700"
-	}
-	return out
-}
-
-func (l logger) EnableTelemetry(cfg TelemetryConfig) (err error) {
-	if l.loggerState.telemetry != nil || (!cfg.Enable && !cfg.SendToLog) {
-		return nil
-	}
-	return EnableTelemetry(cfg, &l)
-}
-
-func (l logger) UpdateTelemetryURI(uri string) (err error) {
-	err = l.loggerState.telemetry.hook.UpdateHookURI(uri)
-	if err == nil {
-		l.loggerState.telemetry.telemetryConfig.URI = uri
-	}
-	return
-}
-
-// GetTelemetryEnabled returns true if
-// logging.config Enable, or SendToLog or config.json
-// TelemetryToLog is true.
-func (l logger) GetTelemetryEnabled() bool {
-	return l.loggerState.telemetry != nil
-}
-
-func (l logger) GetTelemetrySession() string {
-	if !l.GetTelemetryEnabled() {
-		return ""
-	}
-	return l.loggerState.telemetry.telemetryConfig.SessionGUID
-}
-
-func (l logger) GetTelemetryVersion() string {
-	if !l.GetTelemetryEnabled() {
-		return ""
-	}
-	return l.loggerState.telemetry.telemetryConfig.Version
-}
-
-func (l logger) GetTelemetryGUID() string {
-	if !l.GetTelemetryEnabled() {
-		return ""
-	}
-	return l.loggerState.telemetry.telemetryConfig.getHostGUID()
-}
-
-func (l logger) GetInstanceName() string {
-	if !l.GetTelemetryEnabled() {
-		return ""
-	}
-	return l.loggerState.telemetry.telemetryConfig.getInstanceName()
-}
-
-func (l logger) GetTelemetryURI() string {
-	if !l.GetTelemetryEnabled() {
-		return ""
-	}
-	return l.loggerState.telemetry.telemetryConfig.URI
-}
-
-// GetTelemetryUploadingEnabled returns true if telemetry logging is
-// enabled for uploading messages.
-// This is decided by Enable parameter in logging.config
-func (l logger) GetTelemetryUploadingEnabled() bool {
-	return l.GetTelemetryEnabled() &&
-		l.loggerState.telemetry.telemetryConfig.Enable
-}
-
-func (l logger) Metrics(category telemetryspec.Category, metrics telemetryspec.MetricDetails, details interface{}) {
-	if l.loggerState.telemetry != nil {
-		l.loggerState.telemetry.logMetrics(l, category, metrics, details)
-	}
-}
-
-func (l logger) Event(category telemetryspec.Category, identifier telemetryspec.Event) {
-	l.EventWithDetails(category, identifier, nil)
-}
-
-func (l logger) EventWithDetails(category telemetryspec.Category, identifier telemetryspec.Event, details interface{}) {
-	if l.loggerState.telemetry != nil {
-		l.loggerState.telemetry.logEvent(l, category, identifier, details)
-	}
-}
-
-func (l logger) StartOperation(category telemetryspec.Category, identifier telemetryspec.Operation) TelemetryOperation {
-	if l.loggerState.telemetry != nil {
-		return l.loggerState.telemetry.logStartOperation(l, category, identifier)
-	}
-	return TelemetryOperation{}
-}
-
-func (l logger) CloseTelemetry() {
-	if l.loggerState.telemetry != nil {
-		l.loggerState.telemetry.Close()
-	}
-}
-
-func (l logger) FlushTelemetry() {
-	if l.loggerState.telemetry != nil {
-		l.loggerState.telemetry.Flush()
-	}
+	FlushTelemetry()
 }

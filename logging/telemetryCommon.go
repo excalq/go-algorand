@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/algorand/go-deadlock"
-	"github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
 
 	"github.com/algorand/go-algorand/logging/telemetryspec"
 )
@@ -35,16 +35,55 @@ type TelemetryOperation struct {
 	pending        int32
 }
 
+type Hook = zerolog.Hook
+type Event = zerolog.Event
+// Zerolog.Event is write-only, (values are pre-marshalled)
+// telEntry allows passing hook metadata through decorators
+type telEntry struct {
+	time time.Time
+	level Level
+	message string
+	fields Fields
+	rawLogEvent *Event // Perf: Avoid use without good reason
+}
+
+// AsyncPublisher's Hook interface, used by logging library
 type telemetryHook interface {
-	Fire(entry *logrus.Entry) error
-	Levels() []logrus.Level
+	// zerolog Hook function
+	Run(e *Event, level Level, message string)
+	// Direct sending, via Async Publisher
+	Enqueue(e *telEntry)
 	Close()
 	Flush()
-	UpdateHookURI(uri string) (err error)
-
-	appendEntry(entry *logrus.Entry) bool
+	NotifyURIUpdated(uri string) (err error)
+	appendEntry(entry *telEntry) bool
 	waitForEventAndReady() bool
 }
+
+type asyncTelemetryHook struct {
+	deadlock.Mutex
+	teleDecorator   *telemetryDecorator
+	wg            sync.WaitGroup
+	pending       []*telEntry
+	entries       chan *telEntry
+	quit          chan struct{}
+	maxQueueDepth int
+	ready         bool
+	urlUpdate     chan bool
+}
+
+// A dummy noop type to get rid of checks like telemetry.hook != nil
+type dummyHook struct{}
+
+type telemetryDecorator struct {
+	telemetryConfig  TelemetryConfig
+	shipper 		 *telemetryShipper
+	reportLogLevel   Level
+	history          *logBuffer
+	sessionGUID      string
+	factory          shipperFactory
+}
+type shipperFactory func(cfg TelemetryConfig) (*telemetryShipper, error)
 
 type telemetryState struct {
 	history         *logBuffer
@@ -54,13 +93,14 @@ type telemetryState struct {
 
 // TelemetryConfig represents the configuration of Telemetry logging
 type TelemetryConfig struct {
-	Enable             bool
-	SendToLog          bool
+	Enable             bool      // Enable remote telemetry
+	SendToLog          bool      // Include telemetry events in local log
 	URI                string
 	Name               string
 	GUID               string
-	MinLogLevel        logrus.Level `json:"-"` // these are the logrus.Level, but we can't use it directly since on logrus version 1.4.2 they added
-	ReportHistoryLevel logrus.Level `json:"-"` // text marshalers which breaks our backward compatibility.
+	// Note that levels are translated to/from config, and use zerolog's native numbering here. See logLevels.go
+	MinLogLevel        Level `json:"-"` // Custom marshalled for backward compatibility
+	ReportHistoryLevel Level `json:"-"` // Custom marshalled
 	FilePath           string       // Path to file on disk, if any
 	ChainID            string       `json:"-"`
 	SessionGUID        string       `json:"-"`
@@ -77,21 +117,3 @@ type MarshalingTelemetryConfig struct {
 	MinLogLevel        uint32
 	ReportHistoryLevel uint32
 }
-
-type asyncTelemetryHook struct {
-	deadlock.Mutex
-	wrappedHook   logrus.Hook
-	wg            sync.WaitGroup
-	pending       []*logrus.Entry
-	entries       chan *logrus.Entry
-	quit          chan struct{}
-	maxQueueDepth int
-	levels        []logrus.Level
-	ready         bool
-	urlUpdate     chan bool
-}
-
-// A dummy noop type to get rid of checks like telemetry.hook != nil
-type dummyHook struct{}
-
-type hookFactory func(cfg TelemetryConfig) (logrus.Hook, error)

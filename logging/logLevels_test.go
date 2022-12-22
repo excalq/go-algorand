@@ -14,10 +14,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with go-algorand.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package logging
 
-const (
-	errDirectoryAlreadyExists = "network Root Directory '%s' already exists"
-	errorCreateNetwork        = "error creating private network: %s"
-	infoNetworkCreated        = "network %s created under %s"
-)
+import "testing"
+
+func Test_LevelToConfig(t *testing.T) {
+
+}
+
+func Test_ConfigToLevel(t *testing.T) {
+	
+}

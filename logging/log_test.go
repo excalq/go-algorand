@@ -19,14 +19,28 @@ package logging
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/algorand/go-algorand/test/partitiontest"
 	"github.com/stretchr/testify/require"
 )
 
+func TestBaseFacade(t *testing.T) {
+	//Create a buffer (mimics a file) for the output
+	a := require.New(t)
+	var bufNewLogger bytes.Buffer
+
+	bl := Base()
+	bl.SetOutput(&bufNewLogger)
+	bl.Debug("test debug message!")
+	
+	a.Contains(bufNewLogger.String(), "test debug message!")
+}
+
+
 /*
-Since most of the functions are pure wrappers, we don't test them and trust the logrus testing coverage.
+Since most of the functions are pure wrappers, we don't test them and do trust zerolog's testing coverage.
 
 Things to test -
 
@@ -36,10 +50,15 @@ TestWithFieldsNewLogger - Test functionality on a new Logger
 TestSetJSONFormatter - Tests that the output results in JSON Format
 */
 
-func isJSON(s string) bool {
+func jsonToMap(s string) (map[string]interface{}, error) {
 	var js map[string]interface{}
-	return json.Unmarshal([]byte(s), &js) == nil
+	err := json.Unmarshal([]byte(s), &js)
+	return js, err
+}
 
+func isJSON(s string) bool {
+	_, err := jsonToMap(s)
+	return err == nil
 }
 
 func TestFileOutputNewLogger(t *testing.T) {
@@ -70,6 +89,7 @@ func TestSetLevelNewLogger(t *testing.T) {
 	//Debug level is info by default
 	nl := NewLogger()
 	nl.SetOutput(&bufNewLogger)
+	nl.SetLevel(Info)
 
 	nl.Debug("ABC Should not show up")
 	nl.Info("CDF Should show up")
@@ -92,8 +112,14 @@ func TestWithFieldsNewLogger(t *testing.T) {
 	nl.SetOutput(&bufNewLogger)
 
 	nl.WithFields(Fields{"1": 4, "2": "testNew"}).Info("ABCDEFG")
-	a.Regexp("time=\".*\" level=info msg=ABCDEFG 1=4 2=testNew file=log_test.go function=github.com/algorand/go-algorand/logging.TestWithFieldsNewLogger line=\\d+", bufNewLogger.String())
-	a.NotRegexp("time=\".*\" level=info msg=ABCDEFG 1=4 2=test file=log_test.go function=github.com/algorand/go-algorand/logging.TestWithFieldsNewLogger line=\\d+", bufNewLogger.String())
+	json, _ := jsonToMap(bufNewLogger.String())
+			fmt.Println(json)
+	a.Contains(json["message"], "ABCDEFG")
+	a.Contains(json["1"], 4)
+	a.Contains(json["2"], "testNew")
+
+	// a.Regexp("time=\".*\" level=info msg=ABCDEFG 1=4 2=testNew file=log_test.go function=github.com/algorand/go-algorand/logging.TestWithFieldsNewLogger line=\\d+", bufNewLogger.String())
+	// a.NotRegexp("time=\".*\" level=info msg=ABCDEFG 1=4 2=test file=log_test.go function=github.com/algorand/go-algorand/logging.TestWithFieldsNewLogger line=\\d+", bufNewLogger.String())
 }
 
 func TestSetJSONFormatter(t *testing.T) {

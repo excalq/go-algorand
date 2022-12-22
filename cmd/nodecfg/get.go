@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
 	"github.com/algorand/go-algorand/netdeploy/remote"
@@ -52,16 +53,16 @@ var getCmd = &cobra.Command{
 		// Make sure target directory doesn't already exist
 		exists := util.FileExists(networkRootDir)
 		if exists {
-			reportErrorf("Target rootdir '%s' already exists", networkRootDir)
+			log.Fatal().Msgf("Target rootdir '%s' already exists", networkRootDir)
 		}
 
 		if err := doGet(getChannel, getRootDir); err != nil {
-			reportErrorf("Error retrieving configuration: %v", err)
+			log.Fatal().Err(err).Msg("Error retrieving configuration")
 		}
 
 		cfg, err := remote.LoadDeployedNetworkConfigFromDir(getRootDir)
 		if err != nil {
-			reportErrorf("Error loading configuration file: %v", err)
+			log.Fatal().Err(err).Msg("Error loading configuration file")
 		}
 		fmt.Fprintf(os.Stdout, "Configuration for '%s' ready - network contains %d Hosts.\n", getChannel, len(cfg.Hosts))
 	},

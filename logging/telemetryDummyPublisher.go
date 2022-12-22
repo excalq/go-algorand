@@ -14,10 +14,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with go-algorand.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+// A dummy noop type to get rid of checks like telemetry.hook != nil
+package logging
 
-const (
-	errDirectoryAlreadyExists = "network Root Directory '%s' already exists"
-	errorCreateNetwork        = "error creating private network: %s"
-	infoNetworkCreated        = "network %s created under %s"
-)
+func (hook *dummyHook) NotifyURIUpdated(uri string) (err error) {
+	return
+}
+
+func (hook *dummyHook) Run(event *Event, level Level, message string) {
+}
+
+func (hook *dummyHook) Enqueue(entry *telEntry) {
+}
+
+func (hook *dummyHook) Close() {}
+
+func (hook *dummyHook) Flush() {}
+
+func (hook *dummyHook) appendEntry(entry *telEntry) bool {
+	return true
+}
+
+func (hook *dummyHook) waitForEventAndReady() bool {
+	return true
+}

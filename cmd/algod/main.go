@@ -49,7 +49,7 @@ var versionCheck = flag.Bool("v", false, "Display and write current build versio
 var branchCheck = flag.Bool("b", false, "Display the git branch behind the build")
 var channelCheck = flag.Bool("c", false, "Display and release channel behind the build")
 var initAndExit = flag.Bool("x", false, "Initialize the ledger and exit")
-var logToStdout = flag.Bool("o", false, "Write to stdout instead of node.log by overriding config.LogSizeLimit to 0")
+var logToStdout = flag.Bool("o", false, "Log pretty-formatted to stdout instead of node.log (Overrides config.LogSizeLimit to 0)")
 var peerOverride = flag.String("p", "", "Override phonebook with peer ip:port (or semicolon separated list: ip:port;ip:port;ip:port...)")
 var listenIP = flag.String("l", "", "Override config.EndpointAddress (REST listening address) with ip:port")
 var sessionGUID = flag.String("s", "", "Telemetry Session GUID to use")
@@ -142,6 +142,7 @@ func run() int {
 		return 1
 	}
 
+	// By default, will run in ConsoleWriter format, human-readable ANSI-colored (but less performant). daemon uses performant JSON.
 	log := logging.Base()
 	// before doing anything further, attempt to acquire the algod lock
 	// to ensure this is the only node running against this data directory
@@ -157,18 +158,24 @@ func run() int {
 		return 1
 	}
 	defer fileLock.Unlock()
-
+	
 	cfg, err := config.LoadConfigFromDisk(absolutePath)
 	if err != nil && !os.IsNotExist(err) {
 		// log is not setup yet, this will log to stderr
 		log.Fatalf("Cannot load config: %v", err)
 	}
-
+	
 	err = config.LoadConfigurableConsensusProtocols(absolutePath)
 	if err != nil {
 		// log is not setup yet, this will log to stderr
 		log.Fatalf("Unable to load optional consensus protocols file: %v", err)
 	}
+	
+	if logToStdout != nil && *logToStdout {
+		cfg.LogSizeLimit = 0
+		log.UsePrettyOutput(os.Stdout)
+	}
+	log.SetLevel(logging.Level(cfg.BaseLoggerDebugLevel))
 
 	// Enable telemetry hook in daemon to send logs to cloud
 	// If ALGOTEST env variable is set, telemetry is disabled - allows disabling telemetry for tests
@@ -290,10 +297,6 @@ func run() int {
 				log.Debugf("Cannot load static phonebook: %v", err)
 			}
 		}
-	}
-
-	if logToStdout != nil && *logToStdout {
-		cfg.LogSizeLimit = 0
 	}
 
 	err = s.Initialize(cfg, phonebookAddresses, string(genesisText))

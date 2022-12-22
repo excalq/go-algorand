@@ -20,20 +20,20 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-deadlock"
 
-	"github.com/sirupsen/logrus"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
 	"github.com/spf13/cobra"
 )
 
-var log *logrus.Logger
-
 func init() {
-	log = logrus.New()
-	var log = logrus.New()
 
-	log.Out = os.Stdout
-	log.SetLevel(logrus.DebugLevel)
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: logging.TimeFormatRFC3339Micro})
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+
 	// disable the deadlock detection for this tool.
 	deadlock.Opts.Disable = true
 }
@@ -51,23 +51,15 @@ var rootCmd = &cobra.Command{
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		log.Error().Err(err)
 		os.Exit(1)
 	}
 }
 
 func reportInfoln(args ...interface{}) {
-	fmt.Println(args...)
-	// log.Infoln(args...)
+	log.Info().Msg(fmt.Sprint(args...))
 }
 
 func reportInfof(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
-	// log.Infof(format, args...)
-}
-
-func reportErrorf(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
-	// log.Warnf(format, args...)
-	os.Exit(1)
+	log.Info().Msgf(format+"\n", args...)
 }

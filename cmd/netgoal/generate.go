@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
 	"github.com/algorand/go-algorand/gen"
@@ -109,23 +110,24 @@ template modes for -t:`,
 		if nodeTemplatePath != "" {
 			fin, err := os.Open(nodeTemplatePath)
 			if err != nil {
-				reportErrorf("%s: bad node template, %s", nodeTemplatePath, err)
+				// TODO: Better to handle exit in main() rather than exit via logging
+				log.Fatal().Msgf("%s: bad node template, %s", nodeTemplatePath, err)
 			}
 			dec := json.NewDecoder(fin)
 			err = dec.Decode(&baseNode)
 			if err != nil {
-				reportErrorf("%s: bad node template, %s", nodeTemplatePath, err)
+				log.Fatal().Msgf("%s: bad node template, %s", nodeTemplatePath, err)
 			}
 		}
 		if nonParticipatingNodeTemplatePath != "" {
 			fin, err := os.Open(nonParticipatingNodeTemplatePath)
 			if err != nil {
-				reportErrorf("%s: bad npnode template, %s", nonParticipatingNodeTemplatePath, err)
+				log.Fatal().Msgf("%s: bad npnode template, %s", nonParticipatingNodeTemplatePath, err)
 			}
 			dec := json.NewDecoder(fin)
 			err = dec.Decode(&baseNonParticipatingNode)
 			if err != nil {
-				reportErrorf("%s: bad node template, %s", nodeTemplatePath, err)
+				log.Fatal().Msgf("%s: bad node template, %s", nodeTemplatePath, err)
 			}
 		} else {
 			baseNonParticipatingNode = baseNode
@@ -133,12 +135,12 @@ template modes for -t:`,
 		if relayTemplatePath != "" {
 			fin, err := os.Open(relayTemplatePath)
 			if err != nil {
-				reportErrorf("%s: bad relay template, %s", relayTemplatePath, err)
+				log.Fatal().Msgf("%s: bad relay template, %s", relayTemplatePath, err)
 			}
 			dec := json.NewDecoder(fin)
 			err = dec.Decode(&baseRelay)
 			if err != nil {
-				reportErrorf("%s: bad relay template, %s", relayTemplatePath, err)
+				log.Fatal().Msgf("%s: bad relay template, %s", relayTemplatePath, err)
 			}
 		} else {
 			baseRelay = baseNode
@@ -147,15 +149,15 @@ template modes for -t:`,
 		switch templateType {
 		case "genesis", "wallets":
 			if walletsToGenerate < 0 {
-				reportErrorf("must specify number of wallets with -w")
+				log.Fatal().Msgf("must specify number of wallets with -w")
 			}
 			err = generateWalletGenesis(outputFilename, walletsToGenerate, npnAlgodNodes)
 		case "net", "network", "goalnet":
 			if walletsToGenerate < 0 {
-				reportErrorf("must specify number of wallets with -w")
+				log.Fatal().Msgf("must specify number of wallets with -w")
 			}
 			if participationAlgodNodes < 0 {
-				reportErrorf("must specify number of nodes with -n")
+				log.Fatal().Msgf("must specify number of nodes with -n")
 			}
 			if participationHostMachines < 0 {
 				participationHostMachines = participationAlgodNodes
@@ -164,7 +166,7 @@ template modes for -t:`,
 				npnHostMachines = npnAlgodNodes
 			}
 			if relaysToGenerate < 0 {
-				reportErrorf("must specify number of relays with -R")
+				log.Fatal().Msgf("must specify number of relays with -R")
 			}
 			if templateType == "goalnet" {
 				err = generateNetworkGoalTemplate(outputFilename, walletsToGenerate, relaysToGenerate, participationAlgodNodes, npnAlgodNodes)
@@ -179,10 +181,10 @@ template modes for -t:`,
 			err = generateWalletGenesis(outputFilename, 100, 0)
 		case "loadingfile":
 			if sourceWallet == "" {
-				reportErrorf("must specify source wallet name with -wname.")
+				log.Fatal().Msgf("must specify source wallet name with -wname.")
 			}
 			if len(balRange) < 2 {
-				reportErrorf("must specify account balance range with --bal.")
+				log.Fatal().Msgf("must specify account balance range with --bal.")
 			}
 			err = generateAccountsLoadingFileTemplate(outputFilename, sourceWallet, rounds, roundTxnCount, accountsCount, assetsCount, applicationCount, balRange)
 		default:
@@ -193,7 +195,7 @@ template modes for -t:`,
 			return
 		}
 		if err != nil {
-			reportErrorf("error generating template file: %v\n", err)
+			log.Fatal().Msgf("error generating template file: %v\n", err)
 		}
 	},
 }
