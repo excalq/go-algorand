@@ -99,7 +99,7 @@ type LoggerConfig interface {
 	SetJSONFormatter()
 	
 	// Adds a hook to the logger
-	AddHook(hook telemetryHook)
+	AddHook(hook Hook)
 }
 
 // These do not mutate, only return values

@@ -18,6 +18,7 @@ package logging
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/algorand/go-algorand/util/metrics"
 )
@@ -28,83 +29,89 @@ var telemetryDrops = metrics.MakeCounter(metrics.MetricName{Name: "algod_telemet
 // wrappedHook: 
 // channelDepth:
 // maxQueueDepth:
-func asyncTelemetryPublisher(teleDec telemetryDecorator, channelDepth uint, maxQueueDepth int) *asyncTelemetryHook {
+func asyncTelemetryPublisher(teleDec *telemetryDecorator, channelDepth uint, maxQueueDepth int) *asyncTelemetryHook {
 	
-	td, ok := teleDec.(*telemetryDecorator)
-	ready := ok && td.shipper != nil
+	td := teleDec
+	ready := td.shipper != nil
 
-	hook := &asyncTelemetryHook{
+	processor := &asyncTelemetryHook{
 		teleDecorator: teleDec,
-		entries:       make(chan *Entry, channelDepth),
+		entries:       make(chan *telEntry, channelDepth),
 		quit:          make(chan struct{}),
 		maxQueueDepth: maxQueueDepth,
 		ready:         ready,
 		urlUpdate:     make(chan bool),
 	}
 
-	// Telemetry Publishing Goroutine. Exists for lifetime of service.
-	go func() {
-		defer telemetryAsyncShutdown(hook)
+	go asyncTelemetryProcessorLoop(processor)
+    
+	return processor
+}
 
-		exit := false
-		for !exit {
-			exit = !hook.waitForEventAndReady()
+// Telemetry Publishing Goroutine. Exists for lifetime of service.
+func asyncTelemetryProcessorLoop(processor *asyncTelemetryHook) {
+	defer telemetryAsyncShutdown(processor)
 
-			hasEvents := true
-			for hasEvents {
-				select {
-				case entry := <-hook.entries:
-					hook.appendEntry(entry)
-				default:
-					// Send entries queued in hook.pending
-					hook.Lock()
-					var entry *Entry
-					if len(hook.pending) > 0 && hook.ready {
-						entry = hook.pending[0]
-						hook.pending = hook.pending[1:]
+	exit := false
+	for !exit {
+		exit = !processor.waitForEventAndReady()
+
+		hasEvents := true
+		for hasEvents {
+			select {
+			case entry := <-processor.entries:
+				 processor.appendEntry(entry)
+			default:
+				// Send entries queued in hook.pending
+				processor.Lock()
+				var entry *telEntry
+				if len(processor.pending) > 0 && processor.ready {
+					entry = processor.pending[0]
+					processor.pending = processor.pending[1:]
+				}
+				processor.Unlock()
+				if entry != nil {
+					entry, err := processor.teleDecorator.Enrich(entry)
+					if err != nil {
+						Base().Warnf("Unable to decorate entry %#v : %v", entry, err)
 					}
-					hook.Unlock()
-					if entry != nil {
-						// Where should level, message come from?
-						err := hook.teleDecorator.Enrich(entry, level, message)
-						if err != nil {
-							Base().Warnf("Unable to write event %#v to telemetry : %v", entry, err)
-						}
-						hook.wg.Done()
-					} else {
-						hasEvents = false
+					// TODO: Refactor Ship() up to asyncTelemetryHook. Decorator ain't got time for that. Also nil ptr chk?.
+					err = processor.teleDecorator.shipper.Publish(*entry)
+					if err != nil {
+						Base().Warnf("Unable to write entry %#v to telemetry : %v", entry, err)
 					}
+					processor.wg.Done()
+				} else {
+					hasEvents = false
 				}
 			}
 		}
-	}()
-    
-	return hook
+	}
 }
 
-func telemetryAsyncLoop(hook Hook)
-
-func telemetryAsyncShutdown(hook *asyncTelemetryHook) {
+func telemetryAsyncShutdown(processor *asyncTelemetryHook) {
 	moreEntries := true
 	for moreEntries {
 		select {
-		case entry := <-hook.entries:
-			hook.appendEntry(entry)
+		case entry := <-processor.entries:
+			processor.appendEntry(entry)
 		default:
 			moreEntries = false
 		}
 	}
-	for range hook.pending {
+	for range processor.pending {
 		// The telemetry service is exiting. 
 		// Un-wait to allow flushing of remaining messages.
-		hook.wg.Done()
+		processor.wg.Done()
 	}
-	hook.wg.Done()
+	// ************ TODO: Actually log this! ******************************
+	fmt.Println("Telemetry Processor is being shut down. This should only happen on service termination.")
+	processor.wg.Done()
 }
 
 
 // appendEntry adds the given entry to the pending slice and returns whether the hook is ready or not.
-func (hook *asyncTelemetryHook) appendEntry(entry *Entry) bool {
+func (hook *asyncTelemetryHook) appendEntry(entry *telEntry) bool {
 	hook.Lock()
 	defer hook.Unlock()
 	// TODO: If there are errors at startup, before the telemetry URI is set, this can fill up. Should we prioritize
@@ -150,7 +157,20 @@ func (hook *asyncTelemetryHook) waitForEventAndReady() bool {
 }
 
 // This is run directly by the logging library on each log event. It triggers inner Hooks via goroutines
-func (hook *asyncTelemetryHook) Run(entry *Entry, level Level, message string)  {
+func (hook *asyncTelemetryHook) Run(event *Event, level Level, message string)  {
+	// Since event is "write-only", create a usable equivalent for publishing as telemetry
+	telEntry := &telEntry{
+		time: time.Now(),
+		level: level,
+		message: message,
+		rawLogEvent: event,
+	}
+
+	hook.Enqueue(telEntry)
+}
+
+// Adds telemetry events to the async processor, via channels
+func (hook *asyncTelemetryHook) Enqueue(entry *telEntry) {
 	hook.wg.Add(1)
 	select {
 	case <-hook.quit:
@@ -176,39 +196,8 @@ func (hook *asyncTelemetryHook) Flush() {
 	hook.wg.Wait()
 }
 
-// Note: This will be removed with the externalized telemetry project. Return whether or not the URI was successfully updated.
-func (hook *asyncTelemetryHook) UpdateHookURI(uri string) (err error) {
-	
-	updated := false
-	if hook.teleDecorator == nil {
-		return fmt.Errorf("asyncTelemetryHook.wrappedHook is nil")
-	}
-
-	tfh, ok := hook.teleDecorator.(*telemetryDecorator)
-	if ok {
-		hook.Lock()
-
-		copy := tfh.telemetryConfig
-		copy.URI = uri
-		var newHook Hook
-		newHook, err = tfh.factory(copy)
-
-		if err == nil && newHook != nil {
-			tfh.wrappedHook = newHook
-			tfh.telemetryConfig.URI = uri
-			hook.ready = true
-			updated = true
-		}
-
-		// Need to unlock before sending event to hook.urlUpdate
-		hook.Unlock()
-
-		// Notify event listener if the hook was created.
-		if updated {
-			hook.urlUpdate <- true
-		}
-	} else {
-		return fmt.Errorf("asyncTelemetryHook.wrappedHook does not implement telemetryFilteredHook")
-	}
+// This informs the async processor that the URI has been updated, unblocking publishing
+func (hook *asyncTelemetryHook) NotifyURIUpdated(uri string) (err error) {
+	hook.urlUpdate <- true
 	return
 }

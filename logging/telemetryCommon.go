@@ -35,19 +35,55 @@ type TelemetryOperation struct {
 	pending        int32
 }
 
-// Abstract the logging library's Hook type
 type Hook = zerolog.Hook
-type Entry = zerolog.Event // Like Logrus.Entry
+type Event = zerolog.Event
+// Zerolog.Event is write-only, (values are pre-marshalled)
+// telEntry allows passing hook metadata through decorators
+type telEntry struct {
+	time time.Time
+	level Level
+	message string
+	fields Fields
+	rawLogEvent *Event // Perf: Avoid use without good reason
+}
 
-// AsyncHook, fired by logging library
+// AsyncPublisher's Hook interface, used by logging library
 type telemetryHook interface {
-	Run(e *Entry, level Level, message string)
+	// zerolog Hook function
+	Run(e *Event, level Level, message string)
+	// Direct sending, via Async Publisher
+	Enqueue(e *telEntry)
 	Close()
 	Flush()
-	UpdateHookURI(uri string) (err error)
-	appendEntry(entry *Entry) bool
+	NotifyURIUpdated(uri string) (err error)
+	appendEntry(entry *telEntry) bool
 	waitForEventAndReady() bool
 }
+
+type asyncTelemetryHook struct {
+	deadlock.Mutex
+	teleDecorator   *telemetryDecorator
+	wg            sync.WaitGroup
+	pending       []*telEntry
+	entries       chan *telEntry
+	quit          chan struct{}
+	maxQueueDepth int
+	ready         bool
+	urlUpdate     chan bool
+}
+
+// A dummy noop type to get rid of checks like telemetry.hook != nil
+type dummyHook struct{}
+
+type telemetryDecorator struct {
+	telemetryConfig  TelemetryConfig
+	shipper 		 *telemetryShipper
+	reportLogLevel   Level
+	history          *logBuffer
+	sessionGUID      string
+	factory          shipperFactory
+}
+type shipperFactory func(cfg TelemetryConfig) (*telemetryShipper, error)
 
 type telemetryState struct {
 	history         *logBuffer
@@ -81,21 +117,3 @@ type MarshalingTelemetryConfig struct {
 	MinLogLevel        uint32
 	ReportHistoryLevel uint32
 }
-
-// 
-type asyncTelemetryHook struct {
-	deadlock.Mutex
-	teleDecorator   telemetryDecorator
-	wg            sync.WaitGroup
-	pending       []*Entry
-	entries       chan *Entry
-	quit          chan struct{}
-	maxQueueDepth int
-	ready         bool
-	urlUpdate     chan bool
-}
-
-// A dummy noop type to get rid of checks like telemetry.hook != nil
-type dummyHook struct{}
-
-type shipperFactory func(cfg TelemetryConfig) (*telemetryShipper, error)

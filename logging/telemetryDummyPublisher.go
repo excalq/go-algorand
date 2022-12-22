@@ -17,19 +17,21 @@
 // A dummy noop type to get rid of checks like telemetry.hook != nil
 package logging
 
-func (hook *dummyHook) UpdateHookURI(uri string) (err error) {
+func (hook *dummyHook) NotifyURIUpdated(uri string) (err error) {
 	return
 }
 
-func (hook *dummyHook) Run(entry *Entry, level Level, message string) {
-	return
+func (hook *dummyHook) Run(event *Event, level Level, message string) {
+}
+
+func (hook *dummyHook) Enqueue(entry *telEntry) {
 }
 
 func (hook *dummyHook) Close() {}
 
 func (hook *dummyHook) Flush() {}
 
-func (hook *dummyHook) appendEntry(entry *Entry) bool {
+func (hook *dummyHook) appendEntry(entry *telEntry) bool {
 	return true
 }
 

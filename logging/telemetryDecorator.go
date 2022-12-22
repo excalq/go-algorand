@@ -20,19 +20,9 @@
 package logging
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
-
-type telemetryDecorator struct {
-	telemetryConfig TelemetryConfig
-	shipper 		*telemetryShipper
-	reportLogLevel  Level
-	history         *logBuffer
-	sessionGUID     string
-	factory         shipperFactory
-}
 
 // createTelemetryDecorator creates the Telemetry hook decorator, or returns nil if remote logging is not enabled
 func createTelemetryDecorator(cfg TelemetryConfig, history *logBuffer, shipperFactory shipperFactory) (teleDec *telemetryDecorator, err error) {
@@ -54,7 +44,7 @@ func createTelemetryDecorator(cfg TelemetryConfig, history *logBuffer, shipperFa
 // newTelemetryDecorator creates a hook filter for ensuring telemetry events are
 // always included by the wrapped log hook.
 func newTelemetryDecorator(cfg TelemetryConfig, shipper *telemetryShipper, reportLogLevel Level, history *logBuffer, sessionGUID string, factory shipperFactory) (*telemetryDecorator, error) {
-	tDec := &telemetryDecorator{
+	teleDec := &telemetryDecorator{
 		cfg,
 		shipper,
 		reportLogLevel,
@@ -62,59 +52,32 @@ func newTelemetryDecorator(cfg TelemetryConfig, shipper *telemetryShipper, repor
 		sessionGUID,
 		factory,
 	}
-	return tDec, nil
+	return teleDec, nil
 }
 
 // Enriches telemetry events with recent log context, and service metadata
-func (td *telemetryDecorator) Enrich(entry *Entry, level Level, message string) (err error) {
-
-	// NOTE(@excalq): Zerolog.Hook's interface does not include an error return, so disabling errors. Not awesome. :(
-	// Just in case
-	if td.shipper == nil {
-		return errors.New("the wrapped hook has not been initialized")
-	}
+func (td *telemetryDecorator) Enrich(entry *telEntry) (decoratedEntry *telEntry, err error) {
+	level := entry.level
+	message := entry.message
 
 	// Don't include log history when logging debug.Stack() - just pass it through.
 	if level == Error && strings.HasPrefix(message, stackPrefix) {
-		return td.shipper.Publish(entry)
+		return entry, nil
 	}
 
-	// @excalq: Zerolog.Event gives no external access to needed fields. Can we do this differently,
-	// or is that a dealbreaker for using Zerolog? Could history telemetry happen in an 
-	// external goroutine, rather than in hooks?
-	// See https://github.com/rs/zerolog/pull/395
-
+	// If the log event which triggered this hook was above the configured
+	// reporting level, attach the last `logBufferDepth` lines of lines to telemetry.
 	if level <= td.reportLogLevel {
-		// Logging entry at a level which should include log history
-		// Create a new entry augmented with the history field.
-		newEntry := entry.Fields(Fields{
-			"log": td.history.string(), 
-			"session": td.sessionGUID, 
-			"v": td.telemetryConfig.Version,
-		})
-		newEntry.Time = entry.Time
-		newEntry.Level = entry.Level
-		newEntry.Message = entry.Message
-
+		entry.fields["log"] = td.history.string()
 		td.history.trim() // trim history log so we don't keep sending a lot of redundant logs
-
-		return td.shipper.Publish(newEntry)
 	}
 
-	// If we're not including log history and session GUID, create a new
-	// entry that includes the session GUID, unless it is already present
-	// (which it will be for regular telemetry events)
-	var newEntry *Entry
-	if _, has := entry.Data["session"]; has {
-		newEntry = entry
-	} else {
-		newEntry = entry.WithField("session", td.sessionGUID)
-	}
+	// Add certain metadata to the telemetry entry:
+	
+	// Algod version
+	entry.fields["v"] = td.telemetryConfig.Version
+	// Host session GUID
+	entry.fields["session"] = td.sessionGUID
 
-	// Also add version field, if not already present.
-	if _, has := entry.Data["v"]; !has {
-		newEntry = newEntry.WithField("v", td.telemetryConfig.Version)
-	}
-	return td.shipper.Publish(newEntry)
+	return entry, nil
 }
-

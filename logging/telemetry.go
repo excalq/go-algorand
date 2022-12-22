@@ -44,7 +44,7 @@ func EnableTelemetry(cfg TelemetryConfig, l *logFacade) (err error) {
 func enableTelemetryState(telemetry *telemetryState, l *logFacade) {
 	l.telemetry = telemetry
 	// Hook our normal logging to send desired types to telemetry (Events)
-	l.AddHook(telemetry.hook)
+	l.AddHook(Hook(telemetry.hook))
 
 	// Wrap current logger Output writer to capture history
 	// (Tees log events >= cfg.ReportHistoryLevel to Telemetry)
@@ -64,7 +64,7 @@ func makeTelemetryState(cfg TelemetryConfig, shipperFactory shipperFactory) (*te
 		if err != nil {
 			return nil, err
 		}
-		// Creates the outermost Hook layer
+		// Creates an Async Publishing Hook, on which the logger calls .Run()
 		telemetry.hook = asyncTelemetryPublisher(decoratedShipper, channelDepth, maxQueueDepth)
 	} else {
 		telemetry.hook = new(dummyHook)
@@ -109,26 +109,27 @@ func buildMessage(args ...string) string {
 
 // logTelemetry explicitly only sends telemetry events to the cloud.
 func (t *telemetryState) logTelemetry(l logFacade, message string, details interface{}) {
-	logFields := Fields{
-		"session":      l.GetTelemetrySession(),
-		"instanceName": l.GetInstanceName(),
-		"v":            l.GetTelemetryVersion(),
+	// Originally this used Logrus.Entry, and decorators/hooks would edit and read these
+	// Zerolog doesn't provide access to event data, so we'll use our own telEntry struct
+	entry := &telEntry{
+		level: Info,
+		message: message,
+		fields: Fields{
+			"session":      l.GetTelemetrySession(),
+			"instanceName": l.GetInstanceName(),
+			"v":            l.GetTelemetryVersion(),
+		},
 	}
 	if details != nil {
-		logFields["details"] = details
+		entry.fields["details"] = details
 	}
-
-	// @excalq: (perf) Info() can only be called on a pointer
-	logger := l.log.With().Fields(logFields).Logger()
-	// @excalq: Are all telemetry events sent here at INFO level?
-	// entry.Level = logrus.InfoLevel // (pre-refactored) 
-	event := logger.Info()
 
 	if t.telemetryConfig.SendToLog {
 		l.Info(message)
 	}
+	// t.hook is an asyncTelemetryHook (or dummyhook)
 	if t.hook != nil {
-		t.hook.Run(event, Info, message)
+		t.hook.Enqueue(entry)
 	}
 }
 

@@ -34,7 +34,7 @@ func (l logFacade) SetJSONFormatter() {
 }
 
 // Register hooks onto Zerolog Events
-func (l logFacade) AddHook(hook telemetryHook) {
+func (l logFacade) AddHook(hook Hook) {
 	l.log.Hook(hook)
 	l.log.Info().Msg("New logging hook registered.")
 }
@@ -231,7 +231,7 @@ func (l logFacade) EnableTelemetry(cfg TelemetryConfig) (err error) {
 
 func (l logFacade) UpdateTelemetryURI(uri string) (err error) {
 	if l.telemetry.hook != nil {
-		err = l.telemetry.hook.UpdateHookURI(uri)
+		err = l.telemetry.hook.NotifyURIUpdated(uri)
 		if err == nil {
 			l.telemetry.telemetryConfig.URI = uri
 		}

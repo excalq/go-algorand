@@ -45,26 +45,26 @@ func createTelemetryShipper(cfg TelemetryConfig) (shipper *telemetryShipper, err
 		elastash.SetLogger(log), 
 	)
 	ctx, cancel := context.WithCancel(context.TODO())
-	telShip := &telemetryShipper{
+	shipClient := &telemetryShipper{
 		client: client,
 		ctx: ctx,
 		ctxCancel: cancel,
 		log: log,
 	}
 	
-	return telShip, err
+	return shipClient, err
 }
 
-func (t *telemetryShipper) Publish(entry Entry) (err error) {
+func (t *telemetryShipper) Publish(entry telEntry) (err error) {
 	// Problem: zerolog doesn't expose internals of *Event. This is a problem for doing anything useful...
-	msg :=  "I AM BROKEN CODE" // entry.getThePayload()
-	res, err := t.client.Post(t.ctx, "some-path", msg)
+	res, err := t.client.Post(t.ctx, "some-path", entry.message)
 	if err != nil {
 		t.log.Errorf("Telemetry Publish - Error: %w", err)
 		return err
 	}
 	t.log.Infof("Telemetry Publish! Status: %v, Result: %v", res.Status, res.Result)
 
+	// TODO: Proper handling here...
 	fmt.Printf("Tele Send: Status: %d\n", res.Status)
     fmt.Printf("Tele Send: Body: %s\n", string(res.Result))
 	return nil
