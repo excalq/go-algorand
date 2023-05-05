@@ -1,0 +1,18 @@
+{
+    "EnableBlockStats": true,
+    "EnableTelemetry": true,
+    "TelemetryURI": "https://logstash-legacy.deveks.algodev.network",
+    "EnableMetrics": true,
+    "MetricsURI": "<network>.algodev.network:9106",
+    "TxPoolExponentialIncreaseFactor": 1,
+    "DeadlockDetection": -1,
+    "PeerPingPeriodSeconds": 60,
+    "EnableAgreementReporting": true,
+    "EnableAgreementTimeMetrics": true,
+    "EnableAssembleStats": true,
+    "EnableProcessBlockStats": true,
+    "BaseLoggerDebugLevel": 4,
+    "EnableRuntimeMetrics": true,
+    "CadaverSizeTarget": 0
+  }
+  
