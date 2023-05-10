@@ -64,7 +64,7 @@ npx_node = {'Wallets': [],
             'ConfigJSONOverride':
 "{ \"TxPoolExponentialIncreaseFactor\": 1, \
 \"DNSBootstrapID\": \"<network>.algodev.network\", \
-\"DeadlockDetection\": -1, \"BaseLoggerDebugLevel\": 4, \
+\"DeadlockDetection\": -1, \"BaseLoggerDebugLevel\": 4, \"MinLogLevel\": 4, \"ReportHistoryLevel\": 4, \
 \"CadaverSizeTarget\": 0  }"}
 
 npx_count = node_types['NPX']
